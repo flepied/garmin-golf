@@ -3,18 +3,20 @@ from __future__ import annotations
 import json
 import shutil
 from collections.abc import Mapping
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
+import polars as pl
 import typer
 from rich.console import Console
 from rich.table import Table
 
 from .browser_export import BROWSER_EXPORT_SCRIPT
+from .browser_import import import_browser_export_payload
+from .browser_mirror import BrowserMirror, BrowserMirrorError, validate_scorecards_url
 from .client import GarminGolfClient
 from .config import default_config_template, get_config_file, get_settings
 from .fit_parser import inspect_activity_archive, inspect_fit_file
-from .normalize import normalize_holes, normalize_round, normalize_shots
 from .stats import build_round_stats, build_summary_stats
 from .storage import Storage
 from .sync import sync_rounds, sync_shots
@@ -24,12 +26,14 @@ auth_app = typer.Typer(help="Authentication commands.")
 config_app = typer.Typer(help="Configuration commands.")
 export_app = typer.Typer(help="Browser export helpers.")
 inspect_app = typer.Typer(help="Inspection commands.")
+mirror_app = typer.Typer(help="Interactive browser mirroring commands.")
 sync_app = typer.Typer(help="Synchronization commands.")
 stats_app = typer.Typer(help="Local statistics commands.")
 app.add_typer(auth_app, name="auth")
 app.add_typer(config_app, name="config")
 app.add_typer(export_app, name="export")
 app.add_typer(inspect_app, name="inspect")
+app.add_typer(mirror_app, name="mirror")
 app.add_typer(sync_app, name="sync")
 app.add_typer(stats_app, name="stats")
 
@@ -61,6 +65,31 @@ OUT_OPTION = typer.Option(
     Path("garmin-connect-export.js"),
     "--out",
     help="Where to write the browser export script.",
+)
+TIMEOUT_OPTION = typer.Option(
+    300,
+    "--timeout",
+    min=30,
+    help="Interactive timeout in seconds while waiting for Garmin sign-in.",
+)
+OUT_DIR_OPTION = typer.Option(
+    None,
+    "--out-dir",
+    help="Directory where mirrored browser exports are written.",
+)
+URL_REQUIRED_OPTION = typer.Option(..., "--url", help="Garmin Connect URL to mirror.")
+DEBUGGER_ADDRESS_OPTION = typer.Option(
+    None,
+    "--debugger-address",
+    help=(
+        "Attach to an existing Chrome started with "
+        "--remote-debugging-port, for example 127.0.0.1:9222."
+    ),
+)
+PERIOD_OPTION = typer.Option(
+    None,
+    "--period",
+    help="Shortcut period: last-12-months, this-year, or last-year.",
 )
 
 
@@ -103,6 +132,48 @@ def export_browser_script(out: Path = OUT_OPTION) -> None:
     _console().print(f"[green]Wrote browser export script:[/green] {out}")
 
 
+@mirror_app.command("scorecards")
+def mirror_scorecards(
+    url: str = URL_REQUIRED_OPTION,
+    out_dir: Path | None = OUT_DIR_OPTION,
+    debugger_address: str | None = DEBUGGER_ADDRESS_OPTION,
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Re-fetch scorecards that were already mirrored.",
+    ),
+    timeout: int = TIMEOUT_OPTION,
+) -> None:
+    """Mirror Garmin scorecards with an interactive browser session."""
+
+    try:
+        validate_scorecards_url(url)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    settings = get_settings()
+    output_dir = out_dir if out_dir is not None else settings.raw_dir / "browser-mirror"
+    storage = Storage(settings)
+    mirror = BrowserMirror(
+        timeout_seconds=timeout,
+        garmin_email=settings.garmin_email,
+        garmin_password=settings.garmin_password,
+        debugger_address=debugger_address,
+        console=_console(),
+    )
+    try:
+        result = mirror.mirror(url, storage=storage, output_dir=output_dir, force=force)
+    except (BrowserMirrorError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    _console().print(
+        f"[green]Mirrored scorecards:[/green] discovered={result.discovered}, "
+        f"exported={result.exported}, skipped={result.skipped}, "
+        f"imported={result.rounds_imported} rounds, {result.holes_imported} holes, "
+        f"{result.shots_imported} shots into {output_dir}"
+    )
+
+
 @sync_app.command("rounds")
 def sync_rounds_command(
     date_from: str | None = DATE_FROM_OPTION,
@@ -138,14 +209,33 @@ def sync_shots_command(round_id: list[int] | None = ROUND_ID_OPTION) -> None:
 
 
 @stats_app.command("summary")
-def stats_summary() -> None:
+def stats_summary(
+    date_from: str | None = DATE_FROM_OPTION,
+    date_to: str | None = DATE_TO_OPTION,
+    period: str | None = PERIOD_OPTION,
+) -> None:
     """Print aggregate golf statistics for all locally synced rounds."""
 
     storage = _storage()
+    resolved_from, resolved_to = _resolve_date_window(
+        date_from=date_from,
+        date_to=date_to,
+        period=period,
+    )
+    rounds = storage.read_table("rounds")
+    holes = storage.read_table("holes")
+    shots = storage.read_table("shots")
+    filtered_rounds, filtered_holes, filtered_shots = _filter_stats_tables(
+        rounds,
+        holes,
+        shots,
+        date_from=resolved_from,
+        date_to=resolved_to,
+    )
     summary = build_summary_stats(
-        storage.read_table("rounds"),
-        storage.read_table("holes"),
-        storage.read_table("shots"),
+        filtered_rounds,
+        filtered_holes,
+        filtered_shots,
     )
     _render_mapping("Golf Summary", summary)
 
@@ -246,67 +336,19 @@ def import_browser_export(path: Path = PATH_REQUIRED_OPTION) -> None:
         raise typer.BadParameter(f"Export file not found: {path}")
 
     payload = json.loads(path.read_text(encoding="utf-8"))
-    summary = payload.get("summary")
-    details = payload.get("details")
-    shots = payload.get("shots")
-
-    if (
-        not isinstance(summary, dict)
-        or not isinstance(details, list)
-        or not isinstance(shots, list)
-    ):
-        raise typer.BadParameter("Unexpected browser export format.")
-
-    scorecard_summaries = summary.get("scorecardSummaries")
-    if not isinstance(scorecard_summaries, list):
-        raise typer.BadParameter("Browser export is missing summary.scorecardSummaries.")
-
-    summaries_by_id: dict[int, dict[str, object]] = {}
-    for item in scorecard_summaries:
-        if isinstance(item, dict) and isinstance(item.get("id"), int):
-            summaries_by_id[item["id"]] = item
-
-    details_by_id: dict[int, dict[str, object]] = {}
-    for item in details:
-        if not isinstance(item, dict):
-            continue
-        scorecard_id = _extract_scorecard_id(item)
-        if scorecard_id is not None:
-            details_by_id[scorecard_id] = item
-
-    shots_by_id: dict[int, dict[str, object]] = {}
-    for item in shots:
-        if not isinstance(item, dict):
-            continue
-        scorecard_id = item.get("scorecardId")
-        shot_payload = item.get("payload")
-        if isinstance(scorecard_id, int) and isinstance(shot_payload, dict):
-            shots_by_id[scorecard_id] = shot_payload
-
-    round_rows: list[dict[str, object]] = []
-    hole_rows: list[dict[str, object]] = []
-    shot_rows: list[dict[str, object]] = []
-
-    for scorecard_id, summary_row in summaries_by_id.items():
-        detail_row = details_by_id.get(scorecard_id)
-        if not isinstance(detail_row, dict):
-            continue
-        round_rows.append(normalize_round(summary_row, detail_row))
-        hole_rows.extend(normalize_holes(scorecard_id, detail_row))
-        shot_payload = shots_by_id.get(scorecard_id)
-        if isinstance(shot_payload, dict):
-            for hole_number in range(1, 19):
-                shot_rows.extend(normalize_shots(scorecard_id, hole_number, shot_payload))
-
-    storage = _storage()
-    storage.upsert_rows("rounds", round_rows, unique_by=["round_id"])
-    storage.upsert_rows("holes", hole_rows, unique_by=["round_id", "hole_number"])
-    storage.upsert_rows("shots", shot_rows, unique_by=["round_id", "hole_number", "shot_number"])
-    storage.write_json_snapshot(Path("browser-export") / path.name, payload)
+    try:
+        result = import_browser_export_payload(
+            _storage(),
+            payload,
+            snapshot_relative_path=Path("browser-export") / path.name,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
     _console().print(
         f"[green]Imported browser export:[/green] "
-        f"{len(round_rows)} rounds, {len(hole_rows)} holes, {len(shot_rows)} shots."
+        f"{result.rounds_imported} rounds, {result.holes_imported} holes, "
+        f"{result.shots_imported} shots."
     )
 
 
@@ -330,22 +372,78 @@ def _parse_optional_date(value: str | None, option_name: str) -> date | None:
         ) from exc
 
 
-def _extract_scorecard_id(detail_payload: dict[str, object]) -> int | None:
-    scorecard_details = detail_payload.get("scorecardDetails")
-    if isinstance(scorecard_details, list):
-        for item in scorecard_details:
-            if isinstance(item, dict):
-                scorecard = item.get("scorecard")
-                if isinstance(scorecard, dict) and isinstance(scorecard.get("id"), int):
-                    return int(scorecard["id"])
-    scorecard = detail_payload.get("scorecard")
-    if isinstance(scorecard, dict) and isinstance(scorecard.get("id"), int):
-        return int(scorecard["id"])
-    payload_id = detail_payload.get("id")
-    if isinstance(payload_id, int):
-        return int(payload_id)
-    return None
+def _resolve_date_window(
+    *,
+    date_from: str | None,
+    date_to: str | None,
+    period: str | None,
+    today: date | None = None,
+) -> tuple[date | None, date | None]:
+    parsed_from = _parse_optional_date(date_from, "--from")
+    parsed_to = _parse_optional_date(date_to, "--to")
+    if period is None:
+        return parsed_from, parsed_to
+    if parsed_from is not None or parsed_to is not None:
+        raise typer.BadParameter("Use either --period or --from/--to, not both.")
 
+    current_day = today or date.today()
+    if period == "last-12-months":
+        return _months_back_window(current_day, 12)
+    if period == "this-year":
+        return date(current_day.year, 1, 1), current_day
+    if period == "last-year":
+        return date(current_day.year - 1, 1, 1), date(current_day.year - 1, 12, 31)
+    raise typer.BadParameter("Unsupported --period. Use last-12-months, this-year, or last-year.")
+
+
+def _months_back_window(today: date, months: int) -> tuple[date, date]:
+    year = today.year
+    month = today.month - months
+    while month <= 0:
+        year -= 1
+        month += 12
+    start_day = min(today.day, _days_in_month(year, month))
+    return date(year, month, start_day) + timedelta(days=1), today
+
+
+def _days_in_month(year: int, month: int) -> int:
+    next_month = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+    return (next_month - date(year, month, 1)).days
+
+
+def _filter_stats_tables(
+    rounds: pl.DataFrame,
+    holes: pl.DataFrame,
+    shots: pl.DataFrame,
+    *,
+    date_from: date | None,
+    date_to: date | None,
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    if rounds.is_empty() or (date_from is None and date_to is None):
+        return rounds, holes, shots
+
+    filtered_rounds = rounds
+    if "played_on" in rounds.columns:
+        filtered_rounds = rounds.with_columns(
+            pl.col("played_on").str.to_date(strict=False).alias("_played_on_date")
+        )
+        if date_from is not None:
+            filtered_rounds = filtered_rounds.filter(pl.col("_played_on_date") >= pl.lit(date_from))
+        if date_to is not None:
+            filtered_rounds = filtered_rounds.filter(pl.col("_played_on_date") <= pl.lit(date_to))
+        filtered_rounds = filtered_rounds.drop("_played_on_date")
+
+    if filtered_rounds.is_empty() or "round_id" not in filtered_rounds.columns:
+        return filtered_rounds, holes.clear(), shots.clear()
+
+    round_ids = filtered_rounds["round_id"].drop_nulls().to_list()
+    filtered_holes = (
+        holes.filter(pl.col("round_id").is_in(round_ids)) if not holes.is_empty() else holes
+    )
+    filtered_shots = (
+        shots.filter(pl.col("round_id").is_in(round_ids)) if not shots.is_empty() else shots
+    )
+    return filtered_rounds, filtered_holes, filtered_shots
 
 def main() -> None:
     app()

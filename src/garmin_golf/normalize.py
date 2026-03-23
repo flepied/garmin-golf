@@ -12,19 +12,32 @@ def normalize_round(summary: JsonDict, detail: JsonDict) -> dict[str, Any]:
     round_id = scorecard.get("id", summary.get("id"))
     start_time = scorecard.get("startTime", summary.get("startTime"))
     played_on = parse_round_date(str(start_time) if start_time is not None else None)
+    hole_pars = extract_hole_pars(summary, detail)
 
     total_score = _coalesce_int(
         scorecard.get("totalScore"),
+        scorecard.get("strokes"),
         summary.get("totalScore"),
+        summary.get("strokes"),
         summary.get("score"),
     )
-    total_par = _coalesce_int(scorecard.get("totalPar"), summary.get("totalPar"))
+    total_par = _coalesce_int(
+        scorecard.get("totalPar"),
+        summary.get("totalPar"),
+        _nested_get(detail, "courseSnapshots", 0, "roundPar"),
+        sum(hole_pars) if hole_pars else None,
+    )
     course_name = _coalesce_str(
         scorecard.get("courseName"),
         summary.get("courseName"),
         _nested_get(scorecard, "course", "courseName"),
+        _nested_get(detail, "courseSnapshots", 0, "name"),
     )
-    tee_name = _coalesce_str(scorecard.get("teeName"), _nested_get(scorecard, "tee", "name"))
+    tee_name = _coalesce_str(
+        scorecard.get("teeName"),
+        _nested_get(scorecard, "tee", "name"),
+        scorecard.get("teeBox"),
+    )
 
     return {
         "round_id": round_id,
@@ -87,21 +100,28 @@ def normalize_holes(round_id: int, detail: JsonDict) -> list[dict[str, Any]]:
     holes = scorecard.get("holes")
     if not isinstance(holes, list):
         return []
+    hole_pars = extract_hole_pars({}, detail)
 
     rows: list[dict[str, Any]] = []
     for index, hole in enumerate(holes, start=1):
         if not isinstance(hole, dict):
             continue
         strokes = _coalesce_int(hole.get("strokes"), hole.get("score"))
-        par = _coalesce_int(hole.get("par"))
+        par = _coalesce_int(
+            hole.get("par"),
+            hole_pars[index - 1] if index - 1 < len(hole_pars) else None,
+        )
         putts = _coalesce_int(hole.get("putts"))
+        fairway_shot_outcome = _coalesce_str(hole.get("fairwayShotOutcome"))
         fairway_hit = _coalesce_bool(
             hole.get("fairwayHit"),
             _nested_get(hole, "teeShot", "fairwayHit"),
+            _fairway_hit_from_outcome(fairway_shot_outcome, par),
         )
         gir = _coalesce_bool(
             hole.get("greenInRegulation"),
             hole.get("gir"),
+            _gir_from_strokes(strokes, putts, par),
         )
         penalties = _coalesce_int(hole.get("penalties"), hole.get("penaltyStrokes"), default=0)
         rows.append(
@@ -114,7 +134,7 @@ def normalize_holes(round_id: int, detail: JsonDict) -> list[dict[str, Any]]:
                 "fairway_hit": fairway_hit,
                 "gir": gir,
                 "penalties": penalties,
-                "fairway_shot_outcome": _coalesce_str(hole.get("fairwayShotOutcome")),
+                "fairway_shot_outcome": fairway_shot_outcome,
                 "handicap_score": _coalesce_int(hole.get("handicapScore")),
                 "pin_position_lat": _coalesce_float(hole.get("pinPositionLat")),
                 "pin_position_lon": _coalesce_float(hole.get("pinPositionLon")),
@@ -217,9 +237,37 @@ def extract_scorecard(detail: JsonDict) -> JsonDict:
     return detail
 
 
-def _nested_get(data: JsonDict, *keys: str) -> Any:
+def extract_hole_pars(summary: JsonDict, detail: JsonDict) -> list[int]:
+    raw_hole_pars = _coalesce_str(
+        summary.get("holePars"),
+        _nested_get(detail, "courseSnapshots", 0, "holePars"),
+    )
+    if raw_hole_pars:
+        return [int(value) for value in raw_hole_pars if value.isdigit()]
+
+    scorecard = extract_scorecard(detail)
+    holes = scorecard.get("holes")
+    if not isinstance(holes, list):
+        return []
+
+    parsed: list[int] = []
+    for hole in holes:
+        if not isinstance(hole, dict):
+            continue
+        par = _coalesce_int(hole.get("par"))
+        if par is not None:
+            parsed.append(par)
+    return parsed
+
+
+def _nested_get(data: Any, *keys: Any) -> Any:
     current: Any = data
     for key in keys:
+        if isinstance(key, int):
+            if not isinstance(current, list) or key >= len(current):
+                return None
+            current = current[key]
+            continue
         if not isinstance(current, dict):
             return None
         current = current.get(key)
@@ -259,6 +307,8 @@ def _coalesce_bool(*values: Any) -> bool | None:
     for value in values:
         if isinstance(value, bool):
             return value
+        if isinstance(value, int) and value in {0, 1}:
+            return bool(value)
         if isinstance(value, str):
             lowered = value.lower()
             if lowered in {"true", "yes", "1"}:
@@ -266,6 +316,25 @@ def _coalesce_bool(*values: Any) -> bool | None:
             if lowered in {"false", "no", "0"}:
                 return False
     return None
+
+
+def _fairway_hit_from_outcome(outcome: str | None, par: int | None) -> bool | None:
+    if par == 3:
+        return None
+    if not outcome:
+        return None
+    normalized = outcome.upper()
+    if normalized == "HIT":
+        return True
+    if normalized in {"LEFT", "RIGHT", "SHORT", "LONG"}:
+        return False
+    return None
+
+
+def _gir_from_strokes(strokes: int | None, putts: int | None, par: int | None) -> bool | None:
+    if strokes is None or putts is None or par is None:
+        return None
+    return (strokes - putts) <= (par - 2)
 
 
 def _json_dumps(value: Any) -> str | None:

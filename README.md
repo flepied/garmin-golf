@@ -7,6 +7,7 @@ CLI-first Python project to download golf data from Garmin Connect, store it loc
 - `uv` for project and dependency management
 - `garminconnect` for Garmin Connect access
 - `polars` + Parquet for local analytics storage
+- Chrome DevTools Protocol for attached-browser Garmin Connect mirroring
 - `typer` + `rich` for the CLI
 - `pytest`, `ruff`, and `mypy` for development checks
 
@@ -16,9 +17,25 @@ CLI-first Python project to download golf data from Garmin Connect, store it loc
 uv sync --extra dev
 uv run garmin-golf auth login
 uv run garmin-golf sync rounds --from 2025-01-01
+uv run garmin-golf mirror scorecards --url https://connect.garmin.com/app/scorecards/<username>
 uv run garmin-golf sync shots
 uv run garmin-golf stats summary
 ```
+
+The local stats summary includes normalized 18-hole score averages plus hole-level metrics such as GIR, FIR,
+scrambling, scoring breakdowns, par-type scoring, three-putt rate, and penalty rate when the mirrored scorecard
+data is available.
+
+You can scope stats to a date window:
+
+```bash
+uv run garmin-golf stats summary --from 2025-01-01 --to 2025-12-31
+uv run garmin-golf stats summary --period last-12-months
+uv run garmin-golf stats summary --period last-year
+```
+
+Supported `--period` values are `last-12-months`, `this-year`, and `last-year`.
+Use either `--period` or `--from/--to`, not both.
 
 ## Environment
 
@@ -76,8 +93,42 @@ You can inspect the downloaded FIT archive for a synced round with:
 uv run garmin-golf inspect fit --round-id 22068626916
 ```
 
-If Garmin Connect shows richer golf detail in the browser than the API client can fetch, export it from your
-logged-in browser session:
+If Garmin Connect shows richer golf detail in the browser than the API client can fetch, the preferred fallback is
+an attached-browser mirror of your Garmin scorecards page:
+
+```bash
+uv run garmin-golf mirror scorecards --url https://connect.garmin.com/app/scorecards/<username>
+```
+
+The mirror command:
+
+- attaches to a Chrome instance you already started with remote debugging
+- uses your existing logged-in Garmin session
+- fetches the full scorecard/detail/shot payload for every discovered scorecard
+- writes one raw JSON export per scorecard under `data/raw/browser-mirror/`
+- imports those exports into the local Parquet dataset
+
+Start Chrome with remote debugging and log into Garmin in that browser first:
+
+```bash
+google-chrome --remote-debugging-port=9222
+uv run garmin-golf mirror scorecards \
+  --url https://connect.garmin.com/app/scorecards/<username> \
+  --debugger-address 127.0.0.1:9222
+```
+
+That mode lets the mirror use your real logged-in browser session directly instead of trying to reproduce the Garmin
+SSO flow in an isolated browser profile.
+
+Re-running the same command is incremental by default and skips scorecards already mirrored locally. Use
+`--force` to refresh everything:
+
+```bash
+uv run garmin-golf mirror scorecards --url https://connect.garmin.com/app/scorecards/<username> --force
+```
+
+If you need to recover or inspect a single scorecard manually, you can still export it from your logged-in browser
+session with the console script:
 
 ```bash
 uv run garmin-golf export browser-script --out garmin-connect-export.js
@@ -97,7 +148,8 @@ Then:
 uv run garmin-golf sync import-browser-export --path garmin-golf-export.json
 ```
 
-This scorecard-page console export is the recommended fallback when the direct API sync does not expose the golf detail you need.
+This scorecard-page console export remains the manual fallback when the attached-browser mirror is not suitable or
+when you only need one scorecard.
 
 Garmin staff also indicate that the actual golf scorecard can live in a separate FIT file from the activity FIT.
 If you can copy scorecard FIT files from the watch or a Garmin Express sync folder, you can inspect or import them:

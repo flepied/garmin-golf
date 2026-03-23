@@ -1,0 +1,59 @@
+[project]
+name = "garmin-golf"
+version = "0.1.0"
+description = "Download golf data from Garmin Connect and compute local stats."
+readme = "README.md"
+authors = [
+    { name = "Frederic Lepied", email = "flepied@gmail.com" }
+]
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fitdecode>=0.11.0",
+    "garminconnect>=0.2.38",
+    "polars>=1.30.0",
+    "pyarrow>=20.0.0",
+    "pydantic>=2.11.0",
+    "pydantic-settings>=2.8.0",
+    "rich>=14.0.0",
+    "tenacity>=9.0.0",
+    "typer>=0.16.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.16.0",
+    "pytest>=8.4.0",
+    "pytest-cov>=6.2.0",
+    "ruff>=0.12.0",
+]
+notebook = [
+    "jupyterlab>=4.4.0",
+    "matplotlib>=3.10.0",
+]
+
+[project.scripts]
+garmin-golf = "garmin_golf.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.10.9,<0.11.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "SIM"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+packages = ["garmin_golf"]
+
+[[tool.mypy.overrides]]
+module = ["fitdecode", "fitdecode.*", "garminconnect", "garminconnect.*"]
+ignore_missing_imports = true

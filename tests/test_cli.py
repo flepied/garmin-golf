@@ -30,12 +30,18 @@ def test_stats_summary_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None
         ],
         unique_by=["round_id", "hole_number"],
     )
+    storage.upsert_rows(
+        "shots",
+        [{"round_id": 1, "hole_number": 1, "shot_number": 1, "shot_type": "TEE", "club": "Driver", "distance_meters": 200.0}],
+        unique_by=["round_id", "hole_number", "shot_number"],
+    )
 
     runner = CliRunner()
     result = runner.invoke(app, ["stats", "summary"])
 
     assert result.exit_code == 0
     assert "rounds_played" in result.stdout
+    assert "average_tee_shot_distance_m" in result.stdout
 
 
 def test_config_init_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:

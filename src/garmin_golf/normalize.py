@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from .client import parse_round_date
@@ -36,6 +37,8 @@ def normalize_round(summary: JsonDict, detail: JsonDict) -> dict[str, Any]:
         "total_par": total_par,
         "strokes_gained_handicap": scorecard.get("strokesGainedHandicap"),
         "player_profile_id": scorecard.get("playerProfileId", summary.get("playerProfileId")),
+        "summary_json": _json_dumps(summary),
+        "scorecard_json": _json_dumps(scorecard),
     }
 
 
@@ -111,6 +114,12 @@ def normalize_holes(round_id: int, detail: JsonDict) -> list[dict[str, Any]]:
                 "fairway_hit": fairway_hit,
                 "gir": gir,
                 "penalties": penalties,
+                "fairway_shot_outcome": _coalesce_str(hole.get("fairwayShotOutcome")),
+                "handicap_score": _coalesce_int(hole.get("handicapScore")),
+                "pin_position_lat": _coalesce_float(hole.get("pinPositionLat")),
+                "pin_position_lon": _coalesce_float(hole.get("pinPositionLon")),
+                "last_modified": _coalesce_str(hole.get("lastModifiedDt")),
+                "hole_json": _json_dumps(hole),
             }
         )
     return rows
@@ -145,30 +154,50 @@ def normalize_shots(round_id: int, hole_number: int, payload: JsonDict) -> list[
                 "round_id": round_id,
                 "hole_number": hole_number,
                 "shot_number": _coalesce_int(shot.get("shotNumber"), default=index),
+                "shot_id": _coalesce_int(shot.get("id")),
+                "scorecard_id": _coalesce_int(shot.get("scorecardId"), default=round_id),
+                "player_profile_id": _coalesce_int(shot.get("playerProfileId")),
+                "shot_order": _coalesce_int(shot.get("shotOrder"), default=index),
                 "club": _coalesce_str(shot.get("club"), _nested_get(shot, "club", "name")),
+                "club_id": _coalesce_int(shot.get("clubId")),
                 "distance_meters": _coalesce_float(
+                    shot.get("meters"),
                     shot.get("distance"),
                     shot.get("distanceMeters"),
                     _nested_get(shot, "distance", "meters"),
                 ),
                 "lie": _coalesce_str(shot.get("lie")),
                 "result": _coalesce_str(shot.get("result")),
+                "shot_type": _coalesce_str(shot.get("shotType")),
+                "auto_shot_type": _coalesce_str(shot.get("autoShotType")),
+                "shot_source": _coalesce_str(shot.get("shotSource")),
+                "shot_time": _coalesce_str(shot.get("shotTime")),
+                "shot_time_zone_offset": _coalesce_int(shot.get("shotTimeZoneOffset")),
                 "start_lat": _coalesce_float(
+                    _nested_get(shot, "startLoc", "lat"),
                     _nested_get(shot, "startLocation", "lat"),
                     _nested_get(shot, "startCoordinate", "latitude"),
                 ),
                 "start_lon": _coalesce_float(
+                    _nested_get(shot, "startLoc", "lon"),
                     _nested_get(shot, "startLocation", "lon"),
                     _nested_get(shot, "startCoordinate", "longitude"),
                 ),
+                "start_x": _coalesce_int(_nested_get(shot, "startLoc", "x")),
+                "start_y": _coalesce_int(_nested_get(shot, "startLoc", "y")),
                 "end_lat": _coalesce_float(
+                    _nested_get(shot, "endLoc", "lat"),
                     _nested_get(shot, "endLocation", "lat"),
                     _nested_get(shot, "endCoordinate", "latitude"),
                 ),
                 "end_lon": _coalesce_float(
+                    _nested_get(shot, "endLoc", "lon"),
                     _nested_get(shot, "endLocation", "lon"),
                     _nested_get(shot, "endCoordinate", "longitude"),
                 ),
+                "end_x": _coalesce_int(_nested_get(shot, "endLoc", "x")),
+                "end_y": _coalesce_int(_nested_get(shot, "endLoc", "y")),
+                "shot_json": _json_dumps(shot),
             }
         )
     return rows
@@ -237,3 +266,12 @@ def _coalesce_bool(*values: Any) -> bool | None:
             if lowered in {"false", "no", "0"}:
                 return False
     return None
+
+
+def _json_dumps(value: Any) -> str | None:
+    if value is None:
+        return None
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    except TypeError:
+        return json.dumps(value, sort_keys=True, default=str, separators=(",", ":"))

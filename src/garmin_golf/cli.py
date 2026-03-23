@@ -142,7 +142,11 @@ def stats_summary() -> None:
     """Print aggregate golf statistics for all locally synced rounds."""
 
     storage = _storage()
-    summary = build_summary_stats(storage.read_table("rounds"), storage.read_table("holes"))
+    summary = build_summary_stats(
+        storage.read_table("rounds"),
+        storage.read_table("holes"),
+        storage.read_table("shots"),
+    )
     _render_mapping("Golf Summary", summary)
 
 
@@ -151,7 +155,12 @@ def stats_round(round_id: int = ROUND_ID_REQUIRED_OPTION) -> None:
     """Print local statistics for one round."""
 
     storage = _storage()
-    summary = build_round_stats(storage.read_table("rounds"), storage.read_table("holes"), round_id)
+    summary = build_round_stats(
+        storage.read_table("rounds"),
+        storage.read_table("holes"),
+        storage.read_table("shots"),
+        round_id,
+    )
     _render_mapping(f"Round {round_id}", summary)
 
 

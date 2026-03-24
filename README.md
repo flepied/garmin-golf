@@ -86,6 +86,11 @@ Use `uv run garmin-golf stats clubs` to inspect observed `club_id` values, infer
 names, shot counts, and average distances, then add `club_name_overrides` entries for any ids that
 need bag-specific labels.
 
+Displayed distance averages in `stats summary`, `stats clubs`, and `stats second-shots` trim obvious
+outliers automatically: once a comparison group has at least 5 shots, distances outside `mean +/- 2`
+standard deviations are excluded from the reported averages. Usage counts and score outcomes still use
+all matching shots.
+
 ## Garmin golf data caveat
 
 The supported ingestion path is an attached-browser mirror of your Garmin scorecards page:

@@ -7,6 +7,7 @@ from garmin_golf.stats import (
     build_round_stats,
     build_second_shot_stats,
     build_summary_stats,
+    trim_distance_outliers,
 )
 
 
@@ -194,6 +195,71 @@ def test_build_summary_stats_with_9_and_18_hole_rounds() -> None:
     assert summary["average_shots_per_18"] == 18.0
 
 
+def test_trim_distance_outliers_drops_large_outlier_after_minimum_sample() -> None:
+    shots = pl.DataFrame(
+        [
+            {"club_id": 1, "distance_meters": 100.0},
+            {"club_id": 1, "distance_meters": 101.0},
+            {"club_id": 1, "distance_meters": 102.0},
+            {"club_id": 1, "distance_meters": 103.0},
+            {"club_id": 1, "distance_meters": 104.0},
+            {"club_id": 1, "distance_meters": 250.0},
+        ]
+    )
+
+    trimmed = trim_distance_outliers(shots, group_columns=["club_id"])
+
+    assert trimmed.height == 5
+    assert 250.0 not in trimmed["distance_meters"].to_list()
+
+
+def test_trim_distance_outliers_keeps_small_samples_and_zero_variance() -> None:
+    small_sample = pl.DataFrame(
+        [
+            {"club_id": 1, "distance_meters": 100.0},
+            {"club_id": 1, "distance_meters": 101.0},
+            {"club_id": 1, "distance_meters": 250.0},
+        ]
+    )
+    zero_variance = pl.DataFrame(
+        [
+            {"club_id": 2, "distance_meters": 120.0},
+            {"club_id": 2, "distance_meters": 120.0},
+            {"club_id": 2, "distance_meters": 120.0},
+            {"club_id": 2, "distance_meters": 120.0},
+            {"club_id": 2, "distance_meters": 120.0},
+            {"club_id": 2, "distance_meters": 120.0},
+        ]
+    )
+
+    trimmed_small = trim_distance_outliers(small_sample, group_columns=["club_id"])
+    trimmed_zero_variance = trim_distance_outliers(zero_variance, group_columns=["club_id"])
+
+    assert trimmed_small.height == 3
+    assert trimmed_zero_variance.height == 6
+
+
+def test_build_summary_stats_trims_distance_outliers_for_average_distances() -> None:
+    rounds = pl.DataFrame([{"round_id": 1, "total_score": 84, "total_par": 72}])
+    holes = pl.DataFrame()
+    shots = pl.DataFrame(
+        [
+            {"round_id": 1, "shot_type": "TEE", "club": "Driver", "distance_meters": 200.0},
+            {"round_id": 1, "shot_type": "TEE", "club": "Driver", "distance_meters": 201.0},
+            {"round_id": 1, "shot_type": "TEE", "club": "Driver", "distance_meters": 202.0},
+            {"round_id": 1, "shot_type": "TEE", "club": "Driver", "distance_meters": 203.0},
+            {"round_id": 1, "shot_type": "TEE", "club": "Driver", "distance_meters": 204.0},
+            {"round_id": 1, "shot_type": "TEE", "club": "Driver", "distance_meters": 350.0},
+            {"round_id": 1, "shot_type": "PUTT", "club": "Putter", "distance_meters": 3.0},
+        ]
+    )
+
+    summary = build_summary_stats(rounds, holes, shots)
+
+    assert summary["total_shots"] == 7
+    assert summary["average_tee_shot_distance_m"] == 202.0
+
+
 def test_build_course_hole_stats() -> None:
     rounds = pl.DataFrame(
         [
@@ -361,3 +427,32 @@ def test_build_second_shot_stats() -> None:
     assert par4_three_wood["bogey_or_worse_pct"] == 100.0
     par5_three_wood = stats.filter((pl.col("par") == 5) & (pl.col("club") == "3 Wood")).row(0, named=True)
     assert par5_three_wood["avg_to_par"] == 1.0
+
+
+def test_build_second_shot_stats_trims_distance_outliers_only_for_distance_average() -> None:
+    holes = pl.DataFrame(
+        [
+            {"round_id": 1, "hole_number": 1, "par": 4, "strokes": 4},
+            {"round_id": 1, "hole_number": 2, "par": 4, "strokes": 5},
+            {"round_id": 1, "hole_number": 3, "par": 4, "strokes": 4},
+            {"round_id": 1, "hole_number": 4, "par": 4, "strokes": 5},
+            {"round_id": 1, "hole_number": 5, "par": 4, "strokes": 4},
+            {"round_id": 1, "hole_number": 6, "par": 4, "strokes": 6},
+        ]
+    )
+    shots = pl.DataFrame(
+        [
+            {"round_id": 1, "hole_number": 1, "shot_number": 2, "club": "3 Wood", "distance_meters": 150.0},
+            {"round_id": 1, "hole_number": 2, "shot_number": 2, "club": "3 Wood", "distance_meters": 151.0},
+            {"round_id": 1, "hole_number": 3, "shot_number": 2, "club": "3 Wood", "distance_meters": 152.0},
+            {"round_id": 1, "hole_number": 4, "shot_number": 2, "club": "3 Wood", "distance_meters": 153.0},
+            {"round_id": 1, "hole_number": 5, "shot_number": 2, "club": "3 Wood", "distance_meters": 154.0},
+            {"round_id": 1, "hole_number": 6, "shot_number": 2, "club": "3 Wood", "distance_meters": 320.0},
+        ]
+    )
+
+    stats = build_second_shot_stats(holes, shots)
+
+    par4_three_wood = stats.filter((pl.col("par") == 4) & (pl.col("club") == "3 Wood")).row(0, named=True)
+    assert par4_three_wood["second_shots"] == 6
+    assert par4_three_wood["avg_distance_m"] == 152.0

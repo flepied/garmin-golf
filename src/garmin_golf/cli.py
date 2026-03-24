@@ -18,6 +18,7 @@ from .stats import (
     build_round_stats,
     build_second_shot_stats,
     build_summary_stats,
+    trim_distance_outliers,
 )
 from .storage import Storage
 
@@ -529,40 +530,57 @@ def _build_club_inventory_table(raw_shots: pl.DataFrame, resolved_shots: pl.Data
         else pl.lit("Unknown")
     )
 
+    trimmed_by_club = trim_distance_outliers(raw_shots, group_columns=["club_id"])
     defaults = raw_shots.group_by("club_id").agg(
         [
             default_name_column.first().alias("default_name"),
             pl.len().alias("shots"),
-            (
-                pl.col("distance_meters").cast(pl.Float64, strict=False).mean().round(1).alias("avg_distance_m")
-                if "distance_meters" in raw_shots.columns
-                else pl.lit(None, dtype=pl.Float64).alias("avg_distance_m")
-            ),
         ]
     )
+    if "distance_meters" in raw_shots.columns:
+        defaults = defaults.join(
+            trimmed_by_club.group_by("club_id").agg(
+                pl.col("distance_meters")
+                .cast(pl.Float64, strict=False)
+                .mean()
+                .round(1)
+                .alias("avg_distance_m")
+            ),
+            on="club_id",
+            how="left",
+        )
+    else:
+        defaults = defaults.with_columns(pl.lit(None, dtype=pl.Float64).alias("avg_distance_m"))
     configured = resolved_shots.group_by("club_id").agg(
         configured_name_column.first().alias("configured_name")
     )
+    trimmed_by_type = (
+        trim_distance_outliers(raw_shots, group_columns=["club_id", "shot_type"])
+        if "shot_type" in raw_shots.columns
+        else pl.DataFrame()
+    )
     by_type = (
         raw_shots.group_by(["club_id", "shot_type"])
-        .agg(
-            [
-                pl.len().alias("count"),
-                (
+        .agg(pl.len().alias("count"))
+        .sort(["club_id", "count", "shot_type"], descending=[False, True, False], nulls_last=True)
+        if "shot_type" in raw_shots.columns
+        else pl.DataFrame()
+    )
+    if not by_type.is_empty():
+        if "distance_meters" in raw_shots.columns and not trimmed_by_type.is_empty():
+            by_type = by_type.join(
+                trimmed_by_type.group_by(["club_id", "shot_type"]).agg(
                     pl.col("distance_meters")
                     .cast(pl.Float64, strict=False)
                     .mean()
                     .round(1)
                     .alias("avg_distance_m")
-                    if "distance_meters" in raw_shots.columns
-                    else pl.lit(None, dtype=pl.Float64).alias("avg_distance_m")
                 ),
-            ]
-        )
-        .sort(["club_id", "count", "shot_type"], descending=[False, True, False], nulls_last=True)
-        if "shot_type" in raw_shots.columns
-        else pl.DataFrame()
-    )
+                on=["club_id", "shot_type"],
+                how="left",
+            )
+        else:
+            by_type = by_type.with_columns(pl.lit(None, dtype=pl.Float64).alias("avg_distance_m"))
     if not by_type.is_empty():
         by_type_rows: list[dict[str, object]] = []
         for club_id, frame in by_type.partition_by("club_id", as_dict=True).items():

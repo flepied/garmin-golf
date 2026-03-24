@@ -5,6 +5,8 @@ from typing import cast
 import polars as pl
 
 SUPPORTED_EQUIVALENT_HOLE_COUNTS = (9, 18)
+DISTANCE_OUTLIER_STDDEV_THRESHOLD = 2.0
+DISTANCE_OUTLIER_MIN_GROUP_SIZE = 5
 
 
 def build_summary_stats(
@@ -423,19 +425,27 @@ def build_second_shot_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.Data
     if joined.is_empty():
         return pl.DataFrame()
 
+    trimmed_joined = trim_distance_outliers(joined, group_columns=["par", "club"])
+    distance_summary = (
+        trimmed_joined.group_by(["par", "club"])
+        .agg(pl.col("distance_meters").mean().alias("avg_distance_m"))
+        if not trimmed_joined.is_empty()
+        else pl.DataFrame(schema={"par": pl.Int64, "club": pl.String, "avg_distance_m": pl.Float64})
+    )
+
     return (
         joined.group_by(["par", "club"])
         .agg(
             [
                 pl.len().alias("second_shots"),
                 pl.col("round_id").n_unique().alias("rounds"),
-                pl.col("distance_meters").mean().alias("avg_distance_m"),
                 _pct_expr(pl.col("to_par") <= 0).alias("par_or_better_pct"),
                 _pct_expr(pl.col("to_par") >= 1).alias("bogey_or_worse_pct"),
                 _pct_expr(pl.col("to_par") >= 2).alias("double_or_worse_pct"),
                 pl.col("to_par").cast(pl.Float64, strict=False).mean().alias("avg_to_par"),
             ]
         )
+        .join(distance_summary, on=["par", "club"], how="left")
         .sort(
             by=["par", "second_shots", "avg_to_par", "club"],
             descending=[False, True, True, False],
@@ -456,6 +466,48 @@ def build_second_shot_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.Data
 def _mean(series: pl.Series) -> float:
     value = series.cast(pl.Float64, strict=False).drop_nulls().mean()
     return float(cast(int | float, value)) if value is not None else 0.0
+
+
+def trim_distance_outliers(frame: pl.DataFrame, *, group_columns: list[str]) -> pl.DataFrame:
+    if frame.is_empty() or "distance_meters" not in frame.columns:
+        return frame
+
+    working = frame.with_row_index("_row_idx").with_columns(
+        pl.col("distance_meters").cast(pl.Float64, strict=False).alias("_distance_value")
+    )
+    if working.is_empty():
+        return frame
+
+    if group_columns:
+        stats = working.group_by(group_columns).agg(
+            [
+                pl.len().alias("_distance_count"),
+                pl.col("_distance_value").drop_nulls().mean().alias("_distance_mean"),
+                pl.col("_distance_value").drop_nulls().std(ddof=1).alias("_distance_std"),
+            ]
+        )
+        enriched = working.join(stats, on=group_columns, how="left")
+    else:
+        non_null_distances = working["_distance_value"].drop_nulls()
+        enriched = working.with_columns(
+            [
+                pl.lit(working.height).alias("_distance_count"),
+                pl.lit(non_null_distances.mean(), dtype=pl.Float64).alias("_distance_mean"),
+                pl.lit(non_null_distances.std(ddof=1), dtype=pl.Float64).alias("_distance_std"),
+            ]
+        )
+
+    trimmed = enriched.filter(
+        pl.col("_distance_value").is_null()
+        | (pl.col("_distance_count") < DISTANCE_OUTLIER_MIN_GROUP_SIZE)
+        | pl.col("_distance_std").is_null()
+        | (pl.col("_distance_std") == 0)
+        | (
+            (pl.col("_distance_value") - pl.col("_distance_mean")).abs()
+            <= pl.col("_distance_std") * DISTANCE_OUTLIER_STDDEV_THRESHOLD
+        )
+    )
+    return trimmed.select(frame.columns)
 
 
 def _pct_expr(expr: pl.Expr) -> pl.Expr:
@@ -747,6 +799,8 @@ def _mean_for_filter(
     filtered = frame.filter(pl.col(filter_column) == filter_value)
     if filtered.is_empty():
         return 0.0
+    if value_column == "distance_meters":
+        filtered = trim_distance_outliers(filtered, group_columns=[])
     return _mean(filtered[value_column])
 
 

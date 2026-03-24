@@ -207,6 +207,75 @@ def test_mirror_scorecards_command_writes_exports_and_imports(
     assert shots.height == 1
 
 
+def test_mirror_scorecards_command_json(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path / "data"))
+    output_dir = tmp_path / "mirror"
+
+    class FakeMirror:
+        def __init__(
+            self,
+            timeout_seconds: int,
+            *,
+            debugger_address: str | None = None,
+            console: object,
+        ) -> None:
+            self.timeout_seconds = timeout_seconds
+            self.debugger_address = debugger_address
+            self.console = console
+
+        def mirror(
+            self,
+            listing_url: str,
+            *,
+            storage: Storage,
+            output_dir: Path,
+            force: bool = False,
+        ) -> MirrorRunResult:
+            assert listing_url == "https://connect.garmin.com/app/scorecards/flepied"
+            assert force is False
+            return MirrorRunResult(
+                discovered=1,
+                exported=1,
+                skipped=0,
+                rounds_imported=1,
+                holes_imported=1,
+                shots_imported=1,
+            )
+
+    monkeypatch.setattr("garmin_golf.cli.BrowserMirror", FakeMirror)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "mirror",
+            "scorecards",
+            "--url",
+            "https://connect.garmin.com/app/scorecards/flepied",
+            "--debugger-address",
+            "127.0.0.1:9222",
+            "--out-dir",
+            str(output_dir),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "discovered": 1,
+        "exported": 1,
+        "skipped": 0,
+        "rounds_imported": 1,
+        "holes_imported": 1,
+        "shots_imported": 1,
+        "output_dir": str(output_dir),
+    }
+
+
 def test_browser_mirror_requires_debugger_address() -> None:
     try:
         BrowserMirror()

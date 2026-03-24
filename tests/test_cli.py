@@ -1,3 +1,4 @@
+import json
 from datetime import date
 from pathlib import Path
 
@@ -71,6 +72,24 @@ def test_stats_summary_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None
     assert "average_tee_shot_distance_m" in result.stdout
 
 
+def test_stats_summary_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [{"round_id": 1, "total_score": 82, "total_par": 72}],
+        unique_by=["round_id"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "summary", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["rounds_played"] == 1
+    assert "Golf Summary" not in result.stdout
+
+
 def test_stats_practice_focus_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
     storage = Storage(Settings())
@@ -138,6 +157,34 @@ def test_stats_second_shots_command(monkeypatch: MonkeyPatch, tmp_path: Path) ->
     assert "Second Shots" in result.stdout
     assert "3 Wood" in result.stdout
     assert "8 Iron" in result.stdout
+
+
+def test_stats_second_shots_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [{"round_id": 1, "played_on": "2025-06-01", "total_score": 84, "total_par": 72}],
+        unique_by=["round_id"],
+    )
+    storage.upsert_rows(
+        "holes",
+        [{"round_id": 1, "hole_number": 1, "par": 4, "strokes": 4}],
+        unique_by=["round_id", "hole_number"],
+    )
+    storage.upsert_rows(
+        "shots",
+        [{"round_id": 1, "hole_number": 1, "shot_number": 2, "club": "8 Iron", "distance_meters": 135.0}],
+        unique_by=["round_id", "hole_number", "shot_number"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "second-shots", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert isinstance(payload, list)
+    assert payload[0]["club"] == "8 Iron"
 
 
 def test_stats_second_shots_command_uses_club_name_overrides(
@@ -246,6 +293,24 @@ def test_stats_clubs_command_treats_first_shots_as_tee(
     assert row["shot_type_breakdown"] == "APPROACH: 1, TEE: 1"
 
 
+def test_stats_clubs_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "shots",
+        [{"round_id": 1, "hole_number": 1, "shot_number": 2, "club_id": 10400977, "club": "Lob Wedge"}],
+        unique_by=["round_id", "hole_number", "shot_number"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "clubs", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert isinstance(payload, list)
+    assert payload[0]["default_name"] == "Lob Wedge"
+
+
 def test_stats_summary_command_with_date_range(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
     storage = Storage(Settings())
@@ -308,6 +373,23 @@ def test_stats_rounds_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     assert "2025-07-01" in result.stdout
     assert "Red Oaks" in result.stdout
     assert result.stdout.index("2025-07-01") < result.stdout.index("2025-06-01")
+
+
+def test_stats_rounds_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [{"round_id": 1, "played_on": "2025-06-01", "course_name": "Blue Hills"}],
+        unique_by=["round_id"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "rounds", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload == [{"round_id": 1, "played_on": "2025-06-01", "display_course_name": "Blue Hills"}]
 
 
 def test_stats_rounds_command_uses_location_name_fallback(
@@ -411,6 +493,18 @@ def test_stats_rounds_command_with_no_local_rounds(
     assert "garmin-golf mirror scorecards" in result.stdout
 
 
+def test_stats_rounds_command_with_no_local_rounds_json(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "rounds", "--json"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == []
+
+
 def test_stats_rounds_command_with_no_matching_filtered_rounds(
     monkeypatch: MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -512,6 +606,27 @@ def test_stats_courses_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None
     assert result.stdout.index("Blue Hills") < result.stdout.index("Red Oaks")
 
 
+def test_stats_courses_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [
+            {"round_id": 1, "played_on": "2025-06-01", "course_name": "Blue Hills"},
+            {"round_id": 2, "played_on": "2025-06-08", "course_name": "Blue Hills"},
+        ],
+        unique_by=["round_id"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "courses", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload[0]["course_name"] == "Blue Hills"
+    assert payload[0]["rounds_played"] == 2
+
+
 def test_stats_course_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
     storage = Storage(Settings())
@@ -591,6 +706,29 @@ def test_stats_course_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     assert "Course Holes: Blue Hills" in result.stdout
     assert "hardest_holes" in result.stdout
     assert "1 (1.50 to par)" in result.stdout
+
+
+def test_stats_course_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [{"round_id": 1, "played_on": "2025-06-01", "course_name": "Blue Hills", "total_score": 82, "total_par": 72}],
+        unique_by=["round_id"],
+    )
+    storage.upsert_rows(
+        "holes",
+        [{"round_id": 1, "hole_number": 1, "par": 4, "strokes": 5, "putts": 2, "gir": False, "fairway_hit": False, "penalties": 1}],
+        unique_by=["round_id", "hole_number"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "course", "--course", "Blue Hills", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert set(payload) == {"summary", "focus", "holes"}
+    assert payload["holes"][0]["hole_number"] == 1
 
 
 def test_stats_course_command_rejects_unknown_course(
@@ -699,6 +837,39 @@ def test_stats_round_command_accepts_matching_activity_id(
     assert "Round 1001" in result.stdout
     assert "round_id" in result.stdout
     assert "1001" in result.stdout
+
+
+def test_stats_round_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [{"round_id": 1001, "played_on": "2025-06-01", "course_name": "Golf National", "total_score": 82, "total_par": 72}],
+        unique_by=["round_id"],
+    )
+    storage.upsert_rows(
+        "holes",
+        [{"round_id": 1001, "hole_number": 1, "par": 4, "strokes": 5, "putts": 2, "gir": False, "fairway_hit": True, "penalties": 1}],
+        unique_by=["round_id", "hole_number"],
+    )
+    storage.upsert_rows(
+        "shots",
+        [
+            {"round_id": 1001, "hole_number": 1, "shot_number": 1, "shot_type": "TEE", "club": "Driver", "distance_meters": 200.0},
+            {"round_id": 1001, "hole_number": 1, "shot_number": 2, "shot_type": "APPROACH", "club": "8 Iron", "distance_meters": 135.0},
+        ],
+        unique_by=["round_id", "hole_number", "shot_number"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "round", "--round-id", "1001", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert set(payload) == {"summary", "holes", "clubs", "second_shots"}
+    assert payload["summary"]["round_id"] == 1001
+    assert payload["holes"][0]["hole_number"] == 1
+    assert {row["club"] for row in payload["clubs"]} == {"Driver", "8 Iron"}
 
 
 def test_stats_round_command_shows_holes_clubs_and_second_shots(
@@ -830,3 +1001,14 @@ def test_config_init_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert config_file.exists()
     assert 'data_dir = "/home/you/garmin-golf-data"' in config_file.read_text(encoding="utf-8")
+
+
+def test_config_show_path_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    config_file = tmp_path / "config.toml"
+    monkeypatch.setenv("GARMIN_GOLF_CONFIG_FILE", str(config_file))
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "show-path", "--json"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {"config_path": str(config_file)}

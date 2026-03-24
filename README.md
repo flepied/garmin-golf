@@ -48,6 +48,16 @@ uv run garmin-golf stats round --round-id 22068626916
 The round view includes the round summary, a hole-by-hole table, club usage for that round, and a
 second-shot breakdown for par 4s and par 5s when shot data is available.
 
+For agent or script consumption, most commands also support `--json`:
+
+```bash
+uv run garmin-golf stats summary --json
+uv run garmin-golf stats round --round-id 22068626916 --json
+uv run garmin-golf stats clubs --json
+```
+
+JSON mode emits structured data only and skips Rich tables and prose formatting.
+
 To review your history on a specific course and identify the hardest holes:
 
 ```bash

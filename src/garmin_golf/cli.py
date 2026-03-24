@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -112,29 +113,44 @@ PERIOD_OPTION = typer.Option(
     help="Shortcut period: last-12-months, this-year, or last-year.",
 )
 COURSE_REQUIRED_OPTION = typer.Option(..., "--course", help="Exact course name to analyze.")
+JSON_OPTION = typer.Option(False, "--json", help="Emit structured JSON to stdout.")
 ROUND_MATCH_TOLERANCE = timedelta(hours=2)
 
 
 @config_app.command("init")
-def config_init(force: bool = FORCE_OPTION) -> None:
+def config_init(force: bool = FORCE_OPTION, json_output: bool = JSON_OPTION) -> None:
     """Create a starter config file under ~/.config/garmin-golf/."""
 
     config_file = get_config_file()
+    existed = config_file.exists()
     config_file.parent.mkdir(parents=True, exist_ok=True)
-    if config_file.exists() and not force:
+    if existed and not force:
         raise typer.BadParameter(
             f"Config file already exists at {config_file}. Use --force to overwrite."
         )
     config_file.write_text(default_config_template(), encoding="utf-8")
+    if json_output:
+        _emit_json(
+            {
+                "config_path": str(config_file),
+                "overwritten": existed,
+                "permissions_hint": f"chmod 600 {config_file}",
+            }
+        )
+        return
     _console().print(f"[green]Wrote config file:[/green] {config_file}")
     _console().print(f"Set restrictive permissions, for example: chmod 600 {config_file}")
 
 
 @config_app.command("show-path")
-def config_show_path() -> None:
+def config_show_path(json_output: bool = JSON_OPTION) -> None:
     """Print the config file path in use."""
 
-    _console().print(str(get_config_file()))
+    config_path = str(get_config_file())
+    if json_output:
+        _emit_json({"config_path": config_path})
+        return
+    _console().print(config_path)
 
 
 @mirror_app.command("scorecards")
@@ -148,6 +164,7 @@ def mirror_scorecards(
         help="Re-fetch scorecards that were already mirrored.",
     ),
     timeout: int = TIMEOUT_OPTION,
+    json_output: bool = JSON_OPTION,
 ) -> None:
     """Mirror Garmin scorecards with an interactive browser session."""
 
@@ -169,6 +186,18 @@ def mirror_scorecards(
     except (BrowserMirrorError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
 
+    payload = {
+        "discovered": result.discovered,
+        "exported": result.exported,
+        "skipped": result.skipped,
+        "rounds_imported": result.rounds_imported,
+        "holes_imported": result.holes_imported,
+        "shots_imported": result.shots_imported,
+        "output_dir": str(output_dir),
+    }
+    if json_output:
+        _emit_json(payload)
+        return
     _console().print(
         f"[green]Mirrored scorecards:[/green] discovered={result.discovered}, "
         f"exported={result.exported}, skipped={result.skipped}, "
@@ -182,6 +211,7 @@ def stats_summary(
     date_from: str | None = DATE_FROM_OPTION,
     date_to: str | None = DATE_TO_OPTION,
     period: str | None = PERIOD_OPTION,
+    json_output: bool = JSON_OPTION,
 ) -> None:
     """Print aggregate golf statistics for all locally stored rounds."""
 
@@ -207,6 +237,9 @@ def stats_summary(
         filtered_holes,
         filtered_shots,
     )
+    if json_output:
+        _emit_json(summary)
+        return
     _render_mapping("Golf Summary", summary)
 
 
@@ -215,12 +248,16 @@ def stats_practice_focus(
     date_from: str | None = DATE_FROM_OPTION,
     date_to: str | None = DATE_TO_OPTION,
     period: str | None = PERIOD_OPTION,
+    json_output: bool = JSON_OPTION,
 ) -> None:
     """Rank the biggest recurring score leaks to guide practice time."""
 
     storage = _storage()
     rounds = storage.read_table("rounds")
     if rounds.is_empty():
+        if json_output:
+            _emit_json(build_practice_focus_stats(pl.DataFrame(), pl.DataFrame(), pl.DataFrame()))
+            return
         _console().print("No local rounds found. Run `garmin-golf mirror scorecards ...` first.")
         return
 
@@ -240,6 +277,9 @@ def stats_practice_focus(
     )
     canonical_rounds, _ = _canonicalize_rounds(filtered_rounds)
     focus = build_practice_focus_stats(canonical_rounds, filtered_holes, filtered_shots)
+    if json_output:
+        _emit_json(focus)
+        return
     _render_mapping("Practice Focus", focus)
 
 
@@ -248,12 +288,16 @@ def stats_second_shots(
     date_from: str | None = DATE_FROM_OPTION,
     date_to: str | None = DATE_TO_OPTION,
     period: str | None = PERIOD_OPTION,
+    json_output: bool = JSON_OPTION,
 ) -> None:
     """Show second-shot club usage and outcomes on par 4s and par 5s."""
 
     storage = _storage()
     rounds = storage.read_table("rounds")
     if rounds.is_empty():
+        if json_output:
+            _emit_json([])
+            return
         _console().print("No local rounds found. Run `garmin-golf mirror scorecards ...` first.")
         return
 
@@ -273,24 +317,39 @@ def stats_second_shots(
     )
     second_shots = build_second_shot_stats(filtered_holes, filtered_shots)
     if second_shots.is_empty():
+        if json_output:
+            _emit_json([])
+            return
         _console().print("No par-4 or par-5 second-shot data is available for this selection.")
+        return
+    if json_output:
+        _emit_json(second_shots)
         return
     _render_second_shots_table(second_shots)
 
 
 @stats_app.command("clubs")
-def stats_clubs() -> None:
+def stats_clubs(json_output: bool = JSON_OPTION) -> None:
     """List observed club ids with inferred and configured names."""
 
     raw_shots = _shots_with_normalized_shot_types(_storage().read_table("shots"))
     if raw_shots.is_empty() or "club_id" not in raw_shots.columns:
+        if json_output:
+            _emit_json([])
+            return
         _console().print("No club data is available yet. Run `garmin-golf mirror scorecards ...` first.")
         return
 
     resolved_shots = _shots_with_configured_club_names(raw_shots)
     club_inventory = _build_club_inventory_table(raw_shots, resolved_shots)
     if club_inventory.is_empty():
+        if json_output:
+            _emit_json([])
+            return
         _console().print("No club ids were found in the local shot dataset.")
+        return
+    if json_output:
+        _emit_json(club_inventory)
         return
     _render_club_inventory_table(club_inventory)
 
@@ -300,12 +359,16 @@ def stats_rounds(
     date_from: str | None = DATE_FROM_OPTION,
     date_to: str | None = DATE_TO_OPTION,
     period: str | None = PERIOD_OPTION,
+    json_output: bool = JSON_OPTION,
 ) -> None:
     """List local rounds and round ids for round-level stats lookup."""
 
     storage = _storage()
     rounds = storage.read_table("rounds")
     if rounds.is_empty():
+        if json_output:
+            _emit_json([])
+            return
         _console().print("No local rounds found. Run `garmin-golf mirror scorecards ...` first.")
         return
 
@@ -323,10 +386,17 @@ def stats_rounds(
     )
     canonical_rounds, _ = _canonicalize_rounds(filtered_rounds)
     if canonical_rounds.is_empty():
+        if json_output:
+            _emit_json([])
+            return
         _console().print("No rounds matched the selected date window.")
         return
 
-    _render_rounds_table(canonical_rounds)
+    display_rounds = _prepare_rounds_for_display(canonical_rounds)
+    if json_output:
+        _emit_json(display_rounds)
+        return
+    _render_rounds_table(display_rounds)
 
 
 @stats_app.command("courses")
@@ -334,6 +404,7 @@ def stats_courses(
     date_from: str | None = DATE_FROM_OPTION,
     date_to: str | None = DATE_TO_OPTION,
     period: str | None = PERIOD_OPTION,
+    json_output: bool = JSON_OPTION,
 ) -> None:
     """List locally known courses with round counts."""
 
@@ -343,10 +414,17 @@ def stats_courses(
         period=period,
     )
     if canonical_rounds.is_empty():
+        if json_output:
+            _emit_json([])
+            return
         _console().print("No courses matched the selected date window.")
         return
 
-    _render_courses_table(canonical_rounds)
+    courses = _build_courses_table(canonical_rounds)
+    if json_output:
+        _emit_json(courses)
+        return
+    _render_courses_table(courses)
 
 
 @stats_app.command("course")
@@ -355,6 +433,7 @@ def stats_course(
     date_from: str | None = DATE_FROM_OPTION,
     date_to: str | None = DATE_TO_OPTION,
     period: str | None = PERIOD_OPTION,
+    json_output: bool = JSON_OPTION,
 ) -> None:
     """Print course-specific stats and hole difficulty insights."""
 
@@ -365,6 +444,9 @@ def stats_course(
         period=period,
     )
     if canonical_rounds.is_empty():
+        if json_output:
+            _emit_json({"summary": {}, "focus": {}, "holes": []})
+            return
         _console().print("No courses matched the selected date window.")
         return
 
@@ -392,6 +474,9 @@ def stats_course(
     summary = build_summary_stats(target_rounds, target_holes, target_shots)
     hole_stats = build_course_hole_stats(target_rounds, target_holes)
     focus = build_course_focus_stats(hole_stats)
+    if json_output:
+        _emit_json({"summary": summary, "focus": focus, "holes": hole_stats})
+        return
 
     _render_mapping(f"Course Summary: {course}", summary)
     _render_mapping(f"Next Round Focus: {course}", focus)
@@ -402,7 +487,7 @@ def stats_course(
 
 
 @stats_app.command("round")
-def stats_round(round_id: int = ROUND_ID_REQUIRED_OPTION) -> None:
+def stats_round(round_id: int = ROUND_ID_REQUIRED_OPTION, json_output: bool = JSON_OPTION) -> None:
     """Print local analysis for one round."""
 
     storage = _storage()
@@ -419,7 +504,6 @@ def stats_round(round_id: int = ROUND_ID_REQUIRED_OPTION) -> None:
     )
     round_info = canonical_rounds.filter(pl.col("round_id") == resolved_round_id)
     round_title = _format_round_title(resolved_round_id, round_info)
-    _render_mapping(round_title, summary)
 
     holes = (
         all_holes.filter(pl.col("round_id") == resolved_round_id)
@@ -433,14 +517,26 @@ def stats_round(round_id: int = ROUND_ID_REQUIRED_OPTION) -> None:
     )
 
     hole_table = _build_round_holes_table(holes)
+    club_table = _build_round_clubs_table(shots)
+    second_shots = build_second_shot_stats(holes, shots)
+    if json_output:
+        _emit_json(
+            {
+                "summary": summary,
+                "holes": hole_table,
+                "clubs": club_table,
+                "second_shots": second_shots,
+            }
+        )
+        return
+
+    _render_mapping(round_title, summary)
     if not hole_table.is_empty():
         _render_round_holes_table(round_title, hole_table)
 
-    club_table = _build_round_clubs_table(shots)
     if not club_table.is_empty():
         _render_round_clubs_table(round_title, club_table)
 
-    second_shots = build_second_shot_stats(holes, shots)
     if not second_shots.is_empty():
         _render_second_shots_table(second_shots, title=f"{round_title}: Second Shots")
 
@@ -460,8 +556,7 @@ def _render_rounds_table(rounds: pl.DataFrame) -> None:
     table.add_column("played_on")
     table.add_column("course_name")
 
-    display_rounds = _prepare_rounds_for_display(rounds)
-    for row in display_rounds.iter_rows(named=True):
+    for row in rounds.iter_rows(named=True):
         round_id = row.get("round_id")
         played_on = row.get("played_on")
         course_name = row.get("display_course_name")
@@ -473,14 +568,14 @@ def _render_rounds_table(rounds: pl.DataFrame) -> None:
     _console().print(table)
 
 
-def _render_courses_table(rounds: pl.DataFrame) -> None:
+def _render_courses_table(courses: pl.DataFrame) -> None:
     table = Table(title="Local Courses")
     table.add_column("course_name")
     table.add_column("rounds", justify="right")
     table.add_column("first_played")
     table.add_column("last_played")
 
-    for row in _build_courses_table(rounds).iter_rows(named=True):
+    for row in courses.iter_rows(named=True):
         table.add_row(
             _display_value(row.get("course_name")),
             _display_value(row.get("rounds_played")),
@@ -805,6 +900,26 @@ def _format_round_title(round_id: int, round_info: pl.DataFrame) -> str:
 
 def _display_value(value: object) -> str:
     return "" if value is None else str(value)
+
+
+def _emit_json(payload: object) -> None:
+    typer.echo(json.dumps(_json_ready(payload), ensure_ascii=False, default=str))
+
+
+def _json_ready(payload: object) -> object:
+    if isinstance(payload, pl.DataFrame):
+        return payload.to_dicts()
+    if isinstance(payload, Mapping):
+        return {str(key): _json_ready(value) for key, value in payload.items()}
+    if isinstance(payload, list):
+        return [_json_ready(item) for item in payload]
+    if isinstance(payload, tuple):
+        return [_json_ready(item) for item in payload]
+    if isinstance(payload, Path):
+        return str(payload)
+    if isinstance(payload, date | datetime):
+        return payload.isoformat()
+    return payload
 
 
 def _build_courses_table(rounds: pl.DataFrame) -> pl.DataFrame:

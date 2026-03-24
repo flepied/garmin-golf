@@ -4,7 +4,13 @@ from pathlib import Path
 from _pytest.monkeypatch import MonkeyPatch
 from typer.testing import CliRunner
 
-from garmin_golf.cli import _resolve_date_window, app
+from garmin_golf.cli import (
+    _build_club_inventory_table,
+    _resolve_date_window,
+    _shots_with_configured_club_names,
+    _shots_with_normalized_shot_types,
+    app,
+)
 from garmin_golf.config import Settings
 from garmin_golf.storage import Storage
 
@@ -189,8 +195,55 @@ def test_stats_clubs_command_shows_default_and_configured_names(
 
     assert result.exit_code == 0
     assert "Clubs" in result.stdout
-    assert "Lob" in result.stdout
-    assert "56" in result.stdout
+    inventory = _build_club_inventory_table(
+        _shots_with_normalized_shot_types(storage.read_table("shots")),
+        _shots_with_configured_club_names(storage.read_table("shots")),
+    )
+    row = inventory.row(0, named=True)
+    assert row["default_name"] == "Lob Wedge"
+    assert row["configured_name"] == "56 Wedge"
+
+
+def test_stats_clubs_command_treats_first_shots_as_tee(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "shots",
+        [
+            {
+                "round_id": 1,
+                "hole_number": 1,
+                "shot_number": 1,
+                "club_id": 10400961,
+                "club": "Driver",
+                "shot_type": "APPROACH",
+                "distance_meters": 200.0,
+            },
+            {
+                "round_id": 1,
+                "hole_number": 1,
+                "shot_number": 2,
+                "club_id": 10400961,
+                "club": "Driver",
+                "shot_type": "APPROACH",
+                "distance_meters": 150.0,
+            },
+        ],
+        unique_by=["round_id", "hole_number", "shot_number"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "clubs"], terminal_width=200)
+
+    assert result.exit_code == 0
+    inventory = _build_club_inventory_table(
+        _shots_with_normalized_shot_types(storage.read_table("shots")),
+        _shots_with_configured_club_names(storage.read_table("shots")),
+    )
+    row = inventory.row(0, named=True)
+    assert row["shot_type_breakdown"] == "APPROACH: 1, TEE: 1"
 
 
 def test_stats_summary_command_with_date_range(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
@@ -646,6 +699,101 @@ def test_stats_round_command_accepts_matching_activity_id(
     assert "Round 1001" in result.stdout
     assert "round_id" in result.stdout
     assert "1001" in result.stdout
+
+
+def test_stats_round_command_shows_holes_clubs_and_second_shots(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [
+            {
+                "round_id": 1001,
+                "played_on": "2025-06-01",
+                "course_name": "Golf National",
+                "total_score": 82,
+                "total_par": 72,
+            }
+        ],
+        unique_by=["round_id"],
+    )
+    storage.upsert_rows(
+        "holes",
+        [
+            {
+                "round_id": 1001,
+                "hole_number": 1,
+                "par": 4,
+                "strokes": 5,
+                "putts": 2,
+                "gir": False,
+                "fairway_hit": True,
+                "penalties": 1,
+            },
+            {
+                "round_id": 1001,
+                "hole_number": 2,
+                "par": 5,
+                "strokes": 4,
+                "putts": 1,
+                "gir": True,
+                "fairway_hit": False,
+                "penalties": 0,
+            },
+        ],
+        unique_by=["round_id", "hole_number"],
+    )
+    storage.upsert_rows(
+        "shots",
+        [
+            {
+                "round_id": 1001,
+                "hole_number": 1,
+                "shot_number": 1,
+                "shot_type": "TEE",
+                "club": "Driver",
+                "distance_meters": 200.0,
+            },
+            {
+                "round_id": 1001,
+                "hole_number": 1,
+                "shot_number": 2,
+                "shot_type": "APPROACH",
+                "club": "8 Iron",
+                "distance_meters": 135.0,
+            },
+            {
+                "round_id": 1001,
+                "hole_number": 2,
+                "shot_number": 1,
+                "shot_type": "TEE",
+                "club": "3 Wood",
+                "distance_meters": 210.0,
+            },
+            {
+                "round_id": 1001,
+                "hole_number": 2,
+                "shot_number": 2,
+                "shot_type": "APPROACH",
+                "club": "Hybrid",
+                "distance_meters": 160.0,
+            },
+        ],
+        unique_by=["round_id", "hole_number", "shot_number"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "round", "--round-id", "1001"], terminal_width=200)
+
+    assert result.exit_code == 0
+    assert "Round 1001 (Golf National | 2025-06-01)" in result.stdout
+    assert "Round 1001 (Golf National | 2025-06-01): Holes" in result.stdout
+    assert "Round 1001 (Golf National | 2025-06-01): Clubs" in result.stdout
+    assert "Round 1001 (Golf National | 2025-06-01): Second Shots" in result.stdout
+    assert "Driver" in result.stdout
+    assert "Hybrid" in result.stdout
 
 
 def test_resolve_date_window_last_12_months() -> None:

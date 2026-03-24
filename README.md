@@ -45,6 +45,9 @@ uv run garmin-golf stats rounds
 uv run garmin-golf stats round --round-id 22068626916
 ```
 
+The round view includes the round summary, a hole-by-hole table, club usage for that round, and a
+second-shot breakdown for par 4s and par 5s when shot data is available.
+
 To review your history on a specific course and identify the hardest holes:
 
 ```bash

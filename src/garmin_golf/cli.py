@@ -39,8 +39,27 @@ def _storage() -> Storage:
     return Storage(get_settings())
 
 
+def _shots_with_normalized_shot_types(shots: pl.DataFrame) -> pl.DataFrame:
+    if shots.is_empty():
+        return shots
+
+    if "shot_number" in shots.columns and "shot_type" in shots.columns:
+        return shots.with_columns(
+            pl.when(
+                (pl.col("shot_number").cast(pl.Int64, strict=False) == 1)
+                & (pl.col("shot_type").cast(pl.String, strict=False) != "PUTT")
+            )
+            .then(pl.lit("TEE"))
+            .otherwise(pl.col("shot_type").cast(pl.String, strict=False))
+            .alias("shot_type")
+        )
+    return shots
+
+
 def _shots_with_configured_club_names(shots: pl.DataFrame) -> pl.DataFrame:
-    if shots.is_empty() or "club_id" not in shots.columns:
+    shots = _shots_with_normalized_shot_types(shots)
+
+    if "club_id" not in shots.columns:
         return shots
 
     overrides: dict[int, str] = {}
@@ -263,7 +282,7 @@ def stats_second_shots(
 def stats_clubs() -> None:
     """List observed club ids with inferred and configured names."""
 
-    raw_shots = _storage().read_table("shots")
+    raw_shots = _shots_with_normalized_shot_types(_storage().read_table("shots"))
     if raw_shots.is_empty() or "club_id" not in raw_shots.columns:
         _console().print("No club data is available yet. Run `garmin-golf mirror scorecards ...` first.")
         return
@@ -384,19 +403,46 @@ def stats_course(
 
 @stats_app.command("round")
 def stats_round(round_id: int = ROUND_ID_REQUIRED_OPTION) -> None:
-    """Print local statistics for one round."""
+    """Print local analysis for one round."""
 
     storage = _storage()
     rounds = storage.read_table("rounds")
     canonical_rounds, round_aliases = _canonicalize_rounds(rounds)
     resolved_round_id = round_aliases.get(round_id, round_id)
+    all_holes = storage.read_table("holes")
+    all_shots = _shots_with_configured_club_names(storage.read_table("shots"))
     summary = build_round_stats(
         canonical_rounds,
-        storage.read_table("holes"),
-        _shots_with_configured_club_names(storage.read_table("shots")),
+        all_holes,
+        all_shots,
         resolved_round_id,
     )
-    _render_mapping(f"Round {resolved_round_id}", summary)
+    round_info = canonical_rounds.filter(pl.col("round_id") == resolved_round_id)
+    round_title = _format_round_title(resolved_round_id, round_info)
+    _render_mapping(round_title, summary)
+
+    holes = (
+        all_holes.filter(pl.col("round_id") == resolved_round_id)
+        if not all_holes.is_empty() and "round_id" in all_holes.columns
+        else pl.DataFrame()
+    )
+    shots = (
+        all_shots.filter(pl.col("round_id") == resolved_round_id)
+        if not all_shots.is_empty() and "round_id" in all_shots.columns
+        else pl.DataFrame()
+    )
+
+    hole_table = _build_round_holes_table(holes)
+    if not hole_table.is_empty():
+        _render_round_holes_table(round_title, hole_table)
+
+    club_table = _build_round_clubs_table(shots)
+    if not club_table.is_empty():
+        _render_round_clubs_table(round_title, club_table)
+
+    second_shots = build_second_shot_stats(holes, shots)
+    if not second_shots.is_empty():
+        _render_second_shots_table(second_shots, title=f"{round_title}: Second Shots")
 
 
 def _render_mapping(title: str, values: Mapping[str, object]) -> None:
@@ -404,7 +450,7 @@ def _render_mapping(title: str, values: Mapping[str, object]) -> None:
     table.add_column("Metric")
     table.add_column("Value", justify="right")
     for key, value in values.items():
-        table.add_row(key, str(value))
+        table.add_row(key, _display_value(value))
     _console().print(table)
 
 
@@ -420,9 +466,9 @@ def _render_rounds_table(rounds: pl.DataFrame) -> None:
         played_on = row.get("played_on")
         course_name = row.get("display_course_name")
         table.add_row(
-            "" if round_id is None else str(round_id),
-            "" if played_on is None else str(played_on),
-            "" if course_name is None else str(course_name),
+            _display_value(round_id),
+            _display_value(played_on),
+            _display_value(course_name),
         )
     _console().print(table)
 
@@ -436,10 +482,10 @@ def _render_courses_table(rounds: pl.DataFrame) -> None:
 
     for row in _build_courses_table(rounds).iter_rows(named=True):
         table.add_row(
-            str(row.get("course_name") or ""),
-            str(row.get("rounds_played") or ""),
-            str(row.get("first_played") or ""),
-            str(row.get("last_played") or ""),
+            _display_value(row.get("course_name")),
+            _display_value(row.get("rounds_played")),
+            _display_value(row.get("first_played")),
+            _display_value(row.get("last_played")),
         )
     _console().print(table)
 
@@ -465,12 +511,12 @@ def _render_course_holes_table(course: str, hole_stats: pl.DataFrame) -> None:
         table.add_column(column, justify=justify)
 
     for row in hole_stats.iter_rows(named=True):
-        table.add_row(*[str(row.get(column) or "") for column in columns])
+        table.add_row(*[_display_value(row.get(column)) for column in columns])
     _console().print(table)
 
 
-def _render_second_shots_table(second_shots: pl.DataFrame) -> None:
-    table = Table(title="Second Shots")
+def _render_second_shots_table(second_shots: pl.DataFrame, *, title: str = "Second Shots") -> None:
+    table = Table(title=title)
     columns = [
         "par",
         "club",
@@ -486,7 +532,38 @@ def _render_second_shots_table(second_shots: pl.DataFrame) -> None:
         table.add_column(column, justify="right" if column != "club" else "left")
 
     for row in second_shots.iter_rows(named=True):
-        table.add_row(*[str(row.get(column) or "") for column in columns])
+        table.add_row(*[_display_value(row.get(column)) for column in columns])
+    _console().print(table)
+
+
+def _render_round_holes_table(title: str, holes: pl.DataFrame) -> None:
+    table = Table(title=f"{title}: Holes")
+    columns = [
+        "hole_number",
+        "par",
+        "strokes",
+        "to_par",
+        "putts",
+        "gir",
+        "fairway_hit",
+        "penalties",
+    ]
+    for column in columns:
+        table.add_column(column, justify="right")
+
+    for row in holes.iter_rows(named=True):
+        table.add_row(*[_display_value(row.get(column)) for column in columns])
+    _console().print(table)
+
+
+def _render_round_clubs_table(title: str, clubs: pl.DataFrame) -> None:
+    table = Table(title=f"{title}: Clubs")
+    columns = ["club", "shots", "avg_distance_m", "shot_type_breakdown"]
+    for column in columns:
+        table.add_column(column, justify="right" if column in {"shots", "avg_distance_m"} else "left")
+
+    for row in clubs.iter_rows(named=True):
+        table.add_row(*[_display_value(row.get(column)) for column in columns])
     _console().print(table)
 
 
@@ -511,7 +588,7 @@ def _render_club_inventory_table(club_inventory: pl.DataFrame) -> None:
         )
 
     for row in club_inventory.iter_rows(named=True):
-        table.add_row(*[str(row.get(column) or "") for column in columns])
+        table.add_row(*[_display_value(row.get(column)) for column in columns])
     _console().print(table)
 
 
@@ -613,6 +690,121 @@ def _build_club_inventory_table(raw_shots: pl.DataFrame, resolved_shots: pl.Data
         result.with_columns(pl.col("configured_name").fill_null(pl.col("default_name")))
         .sort(["shots", "club_id"], descending=[True, False], nulls_last=True)
     )
+
+
+def _build_round_holes_table(holes: pl.DataFrame) -> pl.DataFrame:
+    if holes.is_empty():
+        return pl.DataFrame()
+
+    frame = holes.with_columns(
+        [
+            (
+                pl.col("hole_number").cast(pl.Int64, strict=False)
+                if "hole_number" in holes.columns
+                else pl.lit(None, dtype=pl.Int64)
+            ).alias("hole_number"),
+            (
+                pl.col("par").cast(pl.Int64, strict=False)
+                if "par" in holes.columns
+                else pl.lit(None, dtype=pl.Int64)
+            ).alias("par"),
+            (
+                pl.col("strokes").cast(pl.Int64, strict=False)
+                if "strokes" in holes.columns
+                else pl.lit(None, dtype=pl.Int64)
+            ).alias("strokes"),
+            (
+                pl.col("putts").cast(pl.Int64, strict=False)
+                if "putts" in holes.columns
+                else pl.lit(None, dtype=pl.Int64)
+            ).alias("putts"),
+            (
+                pl.col("penalties").cast(pl.Int64, strict=False).fill_null(0)
+                if "penalties" in holes.columns
+                else pl.lit(0, dtype=pl.Int64)
+            ).alias("penalties"),
+            (
+                pl.col("gir").cast(pl.Boolean, strict=False)
+                if "gir" in holes.columns
+                else pl.lit(None, dtype=pl.Boolean)
+            ).alias("gir"),
+            (
+                pl.col("fairway_hit").cast(pl.Boolean, strict=False)
+                if "fairway_hit" in holes.columns
+                else pl.lit(None, dtype=pl.Boolean)
+            ).alias("fairway_hit"),
+        ]
+    )
+    if "par" in holes.columns and "strokes" in holes.columns:
+        frame = frame.with_columns(
+            (pl.col("strokes").cast(pl.Int64, strict=False) - pl.col("par").cast(pl.Int64, strict=False)).alias(
+                "to_par"
+            )
+        )
+    else:
+        frame = frame.with_columns(pl.lit(None, dtype=pl.Int64).alias("to_par"))
+    return frame.select(
+        ["hole_number", "par", "strokes", "to_par", "putts", "gir", "fairway_hit", "penalties"]
+    ).sort("hole_number")
+
+
+def _build_round_clubs_table(shots: pl.DataFrame) -> pl.DataFrame:
+    if shots.is_empty() or "club" not in shots.columns:
+        return pl.DataFrame()
+
+    normalized = shots.with_columns(
+        [
+            pl.col("club").cast(pl.String, strict=False).fill_null("Unknown").alias("club"),
+            pl.col("shot_type").cast(pl.String, strict=False).fill_null("UNKNOWN").alias("shot_type"),
+        ]
+    )
+    trimmed = trim_distance_outliers(normalized, group_columns=["club"])
+    clubs = normalized.group_by("club").agg(pl.len().alias("shots"))
+    if "distance_meters" in normalized.columns:
+        clubs = clubs.join(
+            trimmed.group_by("club").agg(
+                pl.col("distance_meters")
+                .cast(pl.Float64, strict=False)
+                .mean()
+                .round(1)
+                .alias("avg_distance_m")
+            ),
+            on="club",
+            how="left",
+        )
+    else:
+        clubs = clubs.with_columns(pl.lit(None, dtype=pl.Float64).alias("avg_distance_m"))
+
+    by_type = (
+        normalized.group_by(["club", "shot_type"])
+        .agg(pl.len().alias("count"))
+        .sort(["club", "count", "shot_type"], descending=[False, True, False], nulls_last=True)
+    )
+    rows: list[dict[str, object]] = []
+    for club, frame in by_type.partition_by("club", as_dict=True).items():
+        club_name = club[0] if isinstance(club, tuple) else club
+        parts = [f"{row.get('shot_type')}: {row.get('count')}" for row in frame.to_dicts()[:4]]
+        rows.append({"club": club_name, "shot_type_breakdown": ", ".join(parts)})
+    type_summary = pl.DataFrame(rows) if rows else pl.DataFrame()
+    result = clubs.join(type_summary, on="club", how="left") if not type_summary.is_empty() else clubs
+    return result.sort(["shots", "club"], descending=[True, False], nulls_last=True)
+
+
+def _format_round_title(round_id: int, round_info: pl.DataFrame) -> str:
+    if round_info.is_empty():
+        return f"Round {round_id}"
+
+    row = round_info.row(0, named=True)
+    course = row.get("display_course_name") or row.get("course_name") or row.get("location_name")
+    played_on = row.get("played_on")
+    suffix_parts = [str(value) for value in (course, played_on) if value]
+    if not suffix_parts:
+        return f"Round {round_id}"
+    return f"Round {round_id} ({' | '.join(suffix_parts)})"
+
+
+def _display_value(value: object) -> str:
+    return "" if value is None else str(value)
 
 
 def _build_courses_table(rounds: pl.DataFrame) -> pl.DataFrame:

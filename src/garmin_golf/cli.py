@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import shutil
 from collections.abc import Mapping
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -11,12 +9,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from .browser_export import BROWSER_EXPORT_SCRIPT
-from .browser_import import import_browser_export_payload
 from .browser_mirror import BrowserMirror, BrowserMirrorError, validate_scorecards_url
-from .client import GarminGolfClient
 from .config import default_config_template, get_config_file, get_settings
-from .fit_parser import inspect_activity_archive, inspect_fit_file
 from .stats import (
     build_course_focus_stats,
     build_course_hole_stats,
@@ -24,31 +18,18 @@ from .stats import (
     build_summary_stats,
 )
 from .storage import Storage
-from .sync import sync_rounds, sync_shots
 
 app = typer.Typer(help="Download golf data from Garmin Connect and compute local stats.")
-auth_app = typer.Typer(help="Authentication commands.")
 config_app = typer.Typer(help="Configuration commands.")
-export_app = typer.Typer(help="Browser export helpers.")
-inspect_app = typer.Typer(help="Inspection commands.")
 mirror_app = typer.Typer(help="Interactive browser mirroring commands.")
-sync_app = typer.Typer(help="Synchronization commands.")
 stats_app = typer.Typer(help="Local statistics commands.")
-app.add_typer(auth_app, name="auth")
 app.add_typer(config_app, name="config")
-app.add_typer(export_app, name="export")
-app.add_typer(inspect_app, name="inspect")
 app.add_typer(mirror_app, name="mirror")
-app.add_typer(sync_app, name="sync")
 app.add_typer(stats_app, name="stats")
 
 
 def _console() -> Console:
     return Console()
-
-
-def _client() -> GarminGolfClient:
-    return GarminGolfClient(get_settings(), console=_console())
 
 
 def _storage() -> Storage:
@@ -57,20 +38,8 @@ def _storage() -> Storage:
 
 DATE_FROM_OPTION = typer.Option(None, "--from", help="Inclusive round date in YYYY-MM-DD format.")
 DATE_TO_OPTION = typer.Option(None, "--to", help="Inclusive round date in YYYY-MM-DD format.")
-ROUND_ID_OPTION = typer.Option(None, "--round-id", help="Round id to sync. Repeatable.")
 ROUND_ID_REQUIRED_OPTION = typer.Option(..., "--round-id", help="Round id to inspect.")
 FORCE_OPTION = typer.Option(False, "--force", help="Overwrite an existing config file.")
-PATH_REQUIRED_OPTION = typer.Option(..., "--path", help="Path to a local FIT file.")
-SOURCE_DIR_REQUIRED_OPTION = typer.Option(
-    ...,
-    "--source-dir",
-    help="Directory containing FIT files.",
-)
-OUT_OPTION = typer.Option(
-    Path("garmin-connect-export.js"),
-    "--out",
-    help="Where to write the browser export script.",
-)
 TIMEOUT_OPTION = typer.Option(
     300,
     "--timeout",
@@ -83,8 +52,8 @@ OUT_DIR_OPTION = typer.Option(
     help="Directory where mirrored browser exports are written.",
 )
 URL_REQUIRED_OPTION = typer.Option(..., "--url", help="Garmin Connect URL to mirror.")
-DEBUGGER_ADDRESS_OPTION = typer.Option(
-    None,
+DEBUGGER_ADDRESS_REQUIRED_OPTION = typer.Option(
+    ...,
     "--debugger-address",
     help=(
         "Attach to an existing Chrome started with "
@@ -98,15 +67,6 @@ PERIOD_OPTION = typer.Option(
 )
 COURSE_REQUIRED_OPTION = typer.Option(..., "--course", help="Exact course name to analyze.")
 ROUND_MATCH_TOLERANCE = timedelta(hours=2)
-
-
-@auth_app.command("login")
-def auth_login() -> None:
-    """Authenticate against Garmin Connect and cache the session tokens."""
-
-    client = _client()
-    client.login()
-    _console().print("[green]Garmin login succeeded.[/green]")
 
 
 @config_app.command("init")
@@ -131,19 +91,11 @@ def config_show_path() -> None:
     _console().print(str(get_config_file()))
 
 
-@export_app.command("browser-script")
-def export_browser_script(out: Path = OUT_OPTION) -> None:
-    """Write a Garmin Connect browser export script for golf scorecards."""
-
-    out.write_text(BROWSER_EXPORT_SCRIPT + "\n", encoding="utf-8")
-    _console().print(f"[green]Wrote browser export script:[/green] {out}")
-
-
 @mirror_app.command("scorecards")
 def mirror_scorecards(
     url: str = URL_REQUIRED_OPTION,
     out_dir: Path | None = OUT_DIR_OPTION,
-    debugger_address: str | None = DEBUGGER_ADDRESS_OPTION,
+    debugger_address: str = DEBUGGER_ADDRESS_REQUIRED_OPTION,
     force: bool = typer.Option(
         False,
         "--force",
@@ -163,8 +115,6 @@ def mirror_scorecards(
     storage = Storage(settings)
     mirror = BrowserMirror(
         timeout_seconds=timeout,
-        garmin_email=settings.garmin_email,
-        garmin_password=settings.garmin_password,
         debugger_address=debugger_address,
         console=_console(),
     )
@@ -181,47 +131,13 @@ def mirror_scorecards(
     )
 
 
-@sync_app.command("rounds")
-def sync_rounds_command(
-    date_from: str | None = DATE_FROM_OPTION,
-    date_to: str | None = DATE_TO_OPTION,
-) -> None:
-    """Sync golf rounds and hole summaries into local Parquet files."""
-
-    client = _client()
-    client.login()
-    result = sync_rounds(
-        client,
-        _storage(),
-        date_from=_parse_optional_date(date_from, "--from"),
-        date_to=_parse_optional_date(date_to, "--to"),
-    )
-    _console().print(
-        f"[green]Synced[/green] {result.rounds_synced} rounds, "
-        f"{result.holes_synced} holes, {result.raw_files_written} raw files."
-    )
-
-
-@sync_app.command("shots")
-def sync_shots_command(round_id: list[int] | None = ROUND_ID_OPTION) -> None:
-    """Sync shot-level data for locally known rounds."""
-
-    client = _client()
-    client.login()
-    result = sync_shots(client, _storage(), round_ids=round_id)
-    _console().print(
-        f"[green]Synced[/green] {result.shots_synced} shots "
-        f"from {result.raw_files_written} raw files."
-    )
-
-
 @stats_app.command("summary")
 def stats_summary(
     date_from: str | None = DATE_FROM_OPTION,
     date_to: str | None = DATE_TO_OPTION,
     period: str | None = PERIOD_OPTION,
 ) -> None:
-    """Print aggregate golf statistics for all locally synced rounds."""
+    """Print aggregate golf statistics for all locally stored rounds."""
 
     storage = _storage()
     resolved_from, resolved_to = _resolve_date_window(
@@ -259,7 +175,7 @@ def stats_rounds(
     storage = _storage()
     rounds = storage.read_table("rounds")
     if rounds.is_empty():
-        _console().print("No local rounds found. Run `garmin-golf sync rounds` first.")
+        _console().print("No local rounds found. Run `garmin-golf mirror scorecards ...` first.")
         return
 
     resolved_from, resolved_to = _resolve_date_window(
@@ -369,104 +285,6 @@ def stats_round(round_id: int = ROUND_ID_REQUIRED_OPTION) -> None:
         resolved_round_id,
     )
     _render_mapping(f"Round {resolved_round_id}", summary)
-
-
-@inspect_app.command("fit")
-def inspect_fit(round_id: int = ROUND_ID_REQUIRED_OPTION) -> None:
-    """Inspect the downloaded FIT archive for one locally synced round."""
-
-    archive_path = get_settings().raw_dir / "activities" / f"{round_id}.zip"
-    if not archive_path.exists():
-        raise typer.BadParameter(f"No activity archive found at {archive_path}.")
-    inspection = inspect_activity_archive(archive_path.read_bytes())
-    _render_mapping(
-        f"FIT Inspection {round_id}",
-        {
-            "lap_count": inspection.lap_count,
-            "record_count": inspection.record_count,
-            "message_types": len(inspection.message_counts),
-            "unknown_message_types": len(inspection.unknown_message_counts),
-            "archive_members": ", ".join(inspection.archive_members),
-            "unknown_messages": ", ".join(
-                f"{name}:{count}" for name, count in inspection.unknown_message_counts.items()
-            ),
-        },
-    )
-
-
-@inspect_app.command("scorecard-fit")
-def inspect_scorecard_fit(path: Path = PATH_REQUIRED_OPTION) -> None:
-    """Inspect a standalone scorecard FIT file copied from a watch or sync folder."""
-
-    if not path.exists():
-        raise typer.BadParameter(f"FIT file not found: {path}")
-    inspection = inspect_fit_file(path)
-    _render_mapping(
-        f"Scorecard FIT {path.name}",
-        {
-            "lap_count": inspection.lap_count,
-            "record_count": inspection.record_count,
-            "message_types": len(inspection.message_counts),
-            "unknown_message_types": len(inspection.unknown_message_counts),
-            "unknown_messages": ", ".join(
-                f"{name}:{count}" for name, count in inspection.unknown_message_counts.items()
-            ),
-        },
-    )
-
-
-@sync_app.command("import-scorecards")
-def import_scorecards(
-    source_dir: Path = SOURCE_DIR_REQUIRED_OPTION,
-    force: bool = FORCE_OPTION,
-) -> None:
-    """Copy standalone scorecard FIT files into local raw storage and inspect them."""
-
-    if not source_dir.exists() or not source_dir.is_dir():
-        raise typer.BadParameter(f"Source directory not found: {source_dir}")
-
-    settings = get_settings()
-    target_dir = settings.raw_dir / "scorecards_fit"
-    target_dir.mkdir(parents=True, exist_ok=True)
-    imported = 0
-
-    for fit_path in sorted(source_dir.glob("*.fit")):
-        destination = target_dir / fit_path.name
-        if destination.exists() and not force:
-            continue
-        shutil.copy2(fit_path, destination)
-        inspection = inspect_fit_file(destination)
-        (target_dir / f"{fit_path.name}.json").write_text(
-            json.dumps(inspection.as_dict(), indent=2, default=str, sort_keys=True),
-            encoding="utf-8",
-        )
-        imported += 1
-
-    _console().print(f"[green]Imported[/green] {imported} scorecard FIT files into {target_dir}")
-
-
-@sync_app.command("import-browser-export")
-def import_browser_export(path: Path = PATH_REQUIRED_OPTION) -> None:
-    """Import golf data exported from a Garmin Connect browser session."""
-
-    if not path.exists():
-        raise typer.BadParameter(f"Export file not found: {path}")
-
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    try:
-        result = import_browser_export_payload(
-            _storage(),
-            payload,
-            snapshot_relative_path=Path("browser-export") / path.name,
-        )
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-
-    _console().print(
-        f"[green]Imported browser export:[/green] "
-        f"{result.rounds_imported} rounds, {result.holes_imported} holes, "
-        f"{result.shots_imported} shots."
-    )
 
 
 def _render_mapping(title: str, values: Mapping[str, object]) -> None:

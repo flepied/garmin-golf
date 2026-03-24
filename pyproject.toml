@@ -9,13 +9,11 @@ authors = [
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "fitdecode>=0.11.0",
-    "garminconnect>=0.2.38",
     "polars>=1.30.0",
     "pyarrow>=20.0.0",
     "pydantic>=2.11.0",
     "pydantic-settings>=2.8.0",
     "rich>=14.0.0",
-    "tenacity>=9.0.0",
     "typer>=0.16.0",
     "websocket-client>=1.8.0",
 ]
@@ -56,5 +54,5 @@ strict = true
 packages = ["garmin_golf"]
 
 [[tool.mypy.overrides]]
-module = ["fitdecode", "fitdecode.*", "garminconnect", "garminconnect.*"]
+module = ["fitdecode", "fitdecode.*"]
 ignore_missing_imports = true

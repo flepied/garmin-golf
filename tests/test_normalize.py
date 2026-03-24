@@ -1,7 +1,6 @@
 from garmin_golf.normalize import (
     normalize_holes,
     normalize_round,
-    normalize_round_from_activity,
     normalize_shots,
 )
 
@@ -79,39 +78,3 @@ def test_normalize_shots() -> None:
     assert len(rows) == 1
     assert rows[0]["club"] == "Driver"
     assert rows[0]["distance_meters"] == 211.5
-
-
-def test_normalize_round_from_activity() -> None:
-    summary = {
-        "activityId": 123,
-        "activityName": "Chateaufort Golf",
-        "startTimeLocal": "2026-03-05 08:21:52",
-        "distance": 8729.11,
-        "duration": 13786.044,
-    }
-    detail = {
-        "activityId": 123,
-        "activityName": "Chateaufort Golf",
-        "locationName": "Chateaufort",
-        "userProfileId": 99,
-        "summaryDTO": {
-            "startTimeLocal": "2026-03-05T08:21:52.0",
-            "distance": 8729.11,
-            "duration": 13786.044,
-            "movingDuration": 7325.0,
-            "elapsedDuration": 13786.044,
-            "calories": 1153,
-            "averageHR": 113,
-            "maxHR": 142,
-        },
-        "metadataDTO": {
-            "deviceMetaDataDTO": {"deviceId": "3363222668"},
-        },
-    }
-
-    round_row = normalize_round_from_activity(summary, detail)
-
-    assert round_row["round_id"] == 123
-    assert round_row["played_on"] == "2026-03-05"
-    assert round_row["data_source"] == "activities"
-    assert round_row["location_name"] == "Chateaufort"

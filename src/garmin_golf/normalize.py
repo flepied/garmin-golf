@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Any
 
-from .client import parse_round_date
 from .models import JsonDict
 
 
@@ -52,46 +52,6 @@ def normalize_round(summary: JsonDict, detail: JsonDict) -> dict[str, Any]:
         "player_profile_id": scorecard.get("playerProfileId", summary.get("playerProfileId")),
         "summary_json": _json_dumps(summary),
         "scorecard_json": _json_dumps(scorecard),
-    }
-
-
-def normalize_round_from_activity(summary: JsonDict, detail: JsonDict) -> dict[str, Any]:
-    activity_id = _coalesce_int(summary.get("activityId"), detail.get("activityId"))
-    summary_dto_value = detail.get("summaryDTO")
-    summary_dto: JsonDict = summary_dto_value if isinstance(summary_dto_value, dict) else {}
-    metadata_dto_value = detail.get("metadataDTO")
-    metadata_dto: JsonDict = metadata_dto_value if isinstance(metadata_dto_value, dict) else {}
-    start_time_local = _coalesce_str(
-        summary_dto.get("startTimeLocal"),
-        summary.get("startTimeLocal"),
-    )
-    played_on = parse_round_date(
-        start_time_local
-    )
-    activity_name = _coalesce_str(detail.get("activityName"), summary.get("activityName"))
-    location_name = _coalesce_str(detail.get("locationName"), summary.get("locationName"))
-
-    return {
-        "round_id": activity_id,
-        "scorecard_id": None,
-        "activity_id": activity_id,
-        "played_on": played_on.isoformat() if played_on else None,
-        "start_time": start_time_local,
-        "course_name": activity_name,
-        "tee_name": None,
-        "location_name": location_name,
-        "total_score": None,
-        "total_par": None,
-        "distance_meters": _coalesce_float(summary_dto.get("distance"), summary.get("distance")),
-        "duration_seconds": _coalesce_float(summary_dto.get("duration"), summary.get("duration")),
-        "moving_duration_seconds": _coalesce_float(summary_dto.get("movingDuration")),
-        "elapsed_duration_seconds": _coalesce_float(summary_dto.get("elapsedDuration")),
-        "calories": _coalesce_float(summary_dto.get("calories")),
-        "average_hr": _coalesce_float(summary_dto.get("averageHR")),
-        "max_hr": _coalesce_float(summary_dto.get("maxHR")),
-        "device_id": _nested_get(metadata_dto, "deviceMetaDataDTO", "deviceId"),
-        "player_profile_id": detail.get("userProfileId", summary.get("userProfileId")),
-        "data_source": "activities",
     }
 
 
@@ -344,3 +304,12 @@ def _json_dumps(value: Any) -> str | None:
         return json.dumps(value, sort_keys=True, separators=(",", ":"))
     except TypeError:
         return json.dumps(value, sort_keys=True, default=str, separators=(",", ":"))
+
+
+def parse_round_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value[:10])
+    except ValueError:
+        return None

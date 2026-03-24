@@ -411,13 +411,11 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fitdecode" },
-    { name = "garminconnect" },
     { name = "polars" },
     { name = "pyarrow" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "rich" },
-    { name = "tenacity" },
     { name = "typer" },
     { name = "websocket-client" },
 ]
@@ -437,7 +435,6 @@ notebook = [
 [package.metadata]
 requires-dist = [
     { name = "fitdecode", specifier = ">=0.11.0" },
-    { name = "garminconnect", specifier = ">=0.2.38" },
     { name = "jupyterlab", marker = "extra == 'notebook'", specifier = ">=4.4.0" },
     { name = "matplotlib", marker = "extra == 'notebook'", specifier = ">=3.10.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.16.0" },
@@ -449,37 +446,10 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.2.0" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.12.0" },
-    { name = "tenacity", specifier = ">=9.0.0" },
     { name = "typer", specifier = ">=0.16.0" },
     { name = "websocket-client", specifier = ">=1.8.0" },
 ]
 provides-extras = ["dev", "notebook"]
-
-[[package]]
-name = "garminconnect"
-version = "0.2.40"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "garth" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/5c/98/929549ceb22dd4e74f32d00f1b591c34a30b5d7d7b69c0101babc2f3dd6d/garminconnect-0.2.40.tar.gz", hash = "sha256:f077ce27b68686c9347cb2209e1ea86dc6ce13d5d9018f3c5b0436cd79e74ce0", size = 40301, upload-time = "2026-03-16T18:56:41.865Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/9d/b7/29be14ca416752597d4934a326b68af281424fee99a521a4bc0596e4f198/garminconnect-0.2.40-py3-none-any.whl", hash = "sha256:121d55ca898e3e14a8ed8b56df7add285e909dbe4a9325063749fca17a4ceaf9", size = 35142, upload-time = "2026-03-16T18:56:40.72Z" },
-]
-
-[[package]]
-name = "garth"
-version = "0.6.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pydantic" },
-    { name = "requests" },
-    { name = "requests-oauthlib" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/20/88/7b9cb1bd266acdab2b83444e6271ed1655d097713ef00b5f2c99ddb8f9c0/garth-0.6.3.tar.gz", hash = "sha256:519d4b532944638652bb740ee44dcf36e1d234321aecf085edd7f1a81ea66f69", size = 1937267, upload-time = "2026-01-15T21:10:04.559Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/1f/3e/050303556452f2bd5b235568c13013ead94458565f1664ea3494fc1ad1d1/garth-0.6.3-py3-none-any.whl", hash = "sha256:9a02b323bf3cad5950594a1a8fc172a5ebed5b151223d261cefd199260b997f5", size = 43170, upload-time = "2026-01-15T21:10:02.795Z" },
-]
 
 [[package]]
 name = "h11"
@@ -1148,15 +1118,6 @@ wheels = [
 ]
 
 [[package]]
-name = "oauthlib"
-version = "3.3.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/0b/5f/19930f824ffeb0ad4372da4812c50edbd1434f678c90c2733e1188edfc63/oauthlib-3.3.1.tar.gz", hash = "sha256:0f0f8aa759826a193cf66c12ea1af1637f87b9b4622d46e866952bb022e538c9", size = 185918, upload-time = "2025-06-19T22:48:08.269Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/be/9c/92789c596b8df838baa98fa71844d84283302f7604ed565dafe5a6b5041a/oauthlib-3.3.1-py3-none-any.whl", hash = "sha256:88119c938d2b8fb88561af5f6ee0eec8cc8d552b7bb1f712743136eb7523b7a1", size = 160065, upload-time = "2025-06-19T22:48:06.508Z" },
-]
-
-[[package]]
 name = "packaging"
 version = "26.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1599,19 +1560,6 @@ wheels = [
 ]
 
 [[package]]
-name = "requests-oauthlib"
-version = "2.0.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "oauthlib" },
-    { name = "requests" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/42/f2/05f29bc3913aea15eb670be136045bf5c5bbf4b99ecb839da9b422bb2c85/requests-oauthlib-2.0.0.tar.gz", hash = "sha256:b3dffaebd884d8cd778494369603a9e7b58d29111bf6b41bdc2dcd87203af4e9", size = 55650, upload-time = "2024-03-22T20:32:29.939Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3b/5d/63d4ae3b9daea098d5d6f5da83984853c1bbacd5dc826764b249fe119d24/requests_oauthlib-2.0.0-py2.py3-none-any.whl", hash = "sha256:7dd8a5c40426b779b0868c404bdef9768deccf22749cde15852df527e6269b36", size = 24179, upload-time = "2024-03-22T20:32:28.055Z" },
-]
-
-[[package]]
 name = "rfc3339-validator"
 version = "0.1.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1776,15 +1724,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/28/e3/55dcc2cfbc3ca9c29519eb6884dd1415ecb53b0e934862d3559ddcb7e20b/stack_data-0.6.3.tar.gz", hash = "sha256:836a778de4fec4dcd1dcd89ed8abff8a221f58308462e1c4aa2a3cf30148f0b9", size = 44707, upload-time = "2023-09-30T13:58:05.479Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f1/7b/ce1eafaf1a76852e2ec9b22edecf1daa58175c090266e9f6c64afcd81d91/stack_data-0.6.3-py3-none-any.whl", hash = "sha256:d5558e0c25a4cb0853cddad3d77da9891a08cb85dd9f9f91b9f8cd66e511e695", size = 24521, upload-time = "2023-09-30T13:58:03.53Z" },
-]
-
-[[package]]
-name = "tenacity"
-version = "9.1.4"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/47/c6/ee486fd809e357697ee8a44d3d69222b344920433d3b6666ccd9b374630c/tenacity-9.1.4.tar.gz", hash = "sha256:adb31d4c263f2bd041081ab33b498309a57c77f9acf2db65aadf0898179cf93a", size = 49413, upload-time = "2026-02-07T10:45:33.841Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d7/c1/eb8f9debc45d3b7918a32ab756658a0904732f75e555402972246b0b8e71/tenacity-9.1.4-py3-none-any.whl", hash = "sha256:6095a360c919085f28c6527de529e76a06ad89b23659fa881ae0649b867a9d55", size = 28926, upload-time = "2026-02-07T10:45:32.24Z" },
 ]
 
 [[package]]

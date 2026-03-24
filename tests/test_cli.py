@@ -9,6 +9,17 @@ from garmin_golf.config import Settings
 from garmin_golf.storage import Storage
 
 
+def test_auth_command_is_not_exposed() -> None:
+    runner = CliRunner()
+    result = runner.invoke(app, ["--help"])
+
+    assert result.exit_code == 0
+    assert " auth " not in result.stdout
+    assert " sync " not in result.stdout
+    assert " export " not in result.stdout
+    assert " inspect " not in result.stdout
+
+
 def test_stats_summary_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
     storage = Storage(Settings())
@@ -215,7 +226,8 @@ def test_stats_rounds_command_with_no_local_rounds(
     result = runner.invoke(app, ["stats", "rounds"])
 
     assert result.exit_code == 0
-    assert "No local rounds found. Run `garmin-golf sync rounds` first." in result.stdout
+    assert "No local rounds found." in result.stdout
+    assert "garmin-golf mirror scorecards" in result.stdout
 
 
 def test_stats_rounds_command_with_no_matching_filtered_rounds(
@@ -541,4 +553,4 @@ def test_config_init_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert config_file.exists()
-    assert 'garmin_email = "you@example.com"' in config_file.read_text(encoding="utf-8")
+    assert 'data_dir = "/home/you/garmin-golf-data"' in config_file.read_text(encoding="utf-8")

@@ -19,12 +19,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    garmin_email: str | None = None
-    garmin_password: str | None = None
     data_dir: Path = Field(default=Path("data"))
     raw_dir_name: str = "raw"
     parquet_dir_name: str = "parquet"
-    token_dir_name: str = "tokens"
     rounds_table_name: str = "rounds"
     holes_table_name: str = "holes"
     shots_table_name: str = "shots"
@@ -55,11 +52,6 @@ class Settings(BaseSettings):
     def parquet_dir(self) -> Path:
         return self.data_dir / self.parquet_dir_name
 
-    @property
-    def token_dir(self) -> Path:
-        return get_config_file().parent / self.token_dir_name
-
-
 def get_settings() -> Settings:
     return Settings()
 
@@ -80,7 +72,5 @@ def default_config_template() -> str:
     return (
         "# Garmin Golf configuration\n"
         "# Environment variables still override values in this file.\n\n"
-        'garmin_email = "you@example.com"\n'
-        'garmin_password = "replace-me"\n'
         '# data_dir = "/home/you/garmin-golf-data"\n'
     )

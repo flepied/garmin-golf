@@ -146,14 +146,10 @@ class BrowserMirror:
         self,
         timeout_seconds: int = 300,
         *,
-        garmin_email: str | None = None,
-        garmin_password: str | None = None,
         debugger_address: str | None = None,
         console: Console | None = None,
     ) -> None:
         self.timeout_seconds = timeout_seconds
-        self.garmin_email = garmin_email
-        self.garmin_password = garmin_password
         self.debugger_address = debugger_address
         self.console = console or Console()
         if not debugger_address:

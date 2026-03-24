@@ -20,6 +20,7 @@ uv run garmin-golf sync rounds --from 2025-01-01
 uv run garmin-golf mirror scorecards --url https://connect.garmin.com/app/scorecards/<username>
 uv run garmin-golf sync shots
 uv run garmin-golf stats rounds
+uv run garmin-golf stats courses
 uv run garmin-golf stats summary
 ```
 
@@ -32,6 +33,7 @@ You can scope stats to a date window:
 ```bash
 uv run garmin-golf stats rounds --from 2025-01-01 --to 2025-12-31
 uv run garmin-golf stats rounds --period last-12-months
+uv run garmin-golf stats courses --period last-12-months
 uv run garmin-golf stats summary --from 2025-01-01 --to 2025-12-31
 uv run garmin-golf stats summary --period last-12-months
 uv run garmin-golf stats summary --period last-year
@@ -45,6 +47,14 @@ To inspect a single round after discovering its id:
 ```bash
 uv run garmin-golf stats rounds
 uv run garmin-golf stats round --round-id 22068626916
+```
+
+To review your history on a specific course and identify the hardest holes:
+
+```bash
+uv run garmin-golf stats courses
+uv run garmin-golf stats course --course "Golf National ~ Aigle"
+uv run garmin-golf stats course --course "Golf National ~ Aigle" --period last-12-months
 ```
 
 ## Environment

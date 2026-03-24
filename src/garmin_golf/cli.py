@@ -17,7 +17,12 @@ from .browser_mirror import BrowserMirror, BrowserMirrorError, validate_scorecar
 from .client import GarminGolfClient
 from .config import default_config_template, get_config_file, get_settings
 from .fit_parser import inspect_activity_archive, inspect_fit_file
-from .stats import build_round_stats, build_summary_stats
+from .stats import (
+    build_course_focus_stats,
+    build_course_hole_stats,
+    build_round_stats,
+    build_summary_stats,
+)
 from .storage import Storage
 from .sync import sync_rounds, sync_shots
 
@@ -91,6 +96,7 @@ PERIOD_OPTION = typer.Option(
     "--period",
     help="Shortcut period: last-12-months, this-year, or last-year.",
 )
+COURSE_REQUIRED_OPTION = typer.Option(..., "--course", help="Exact course name to analyze.")
 ROUND_MATCH_TOLERANCE = timedelta(hours=2)
 
 
@@ -276,6 +282,78 @@ def stats_rounds(
     _render_rounds_table(canonical_rounds)
 
 
+@stats_app.command("courses")
+def stats_courses(
+    date_from: str | None = DATE_FROM_OPTION,
+    date_to: str | None = DATE_TO_OPTION,
+    period: str | None = PERIOD_OPTION,
+) -> None:
+    """List locally known courses with round counts."""
+
+    canonical_rounds = _load_canonical_rounds(
+        date_from=date_from,
+        date_to=date_to,
+        period=period,
+    )
+    if canonical_rounds.is_empty():
+        _console().print("No courses matched the selected date window.")
+        return
+
+    _render_courses_table(canonical_rounds)
+
+
+@stats_app.command("course")
+def stats_course(
+    course: str = COURSE_REQUIRED_OPTION,
+    date_from: str | None = DATE_FROM_OPTION,
+    date_to: str | None = DATE_TO_OPTION,
+    period: str | None = PERIOD_OPTION,
+) -> None:
+    """Print course-specific stats and hole difficulty insights."""
+
+    storage = _storage()
+    canonical_rounds = _load_canonical_rounds(
+        date_from=date_from,
+        date_to=date_to,
+        period=period,
+    )
+    if canonical_rounds.is_empty():
+        _console().print("No courses matched the selected date window.")
+        return
+
+    target_rounds = canonical_rounds.filter(pl.col("display_course_name") == course)
+    if target_rounds.is_empty():
+        raise typer.BadParameter(
+            f"Course not found: {course}. "
+            "Use `garmin-golf stats courses` to inspect available names."
+        )
+
+    round_ids = target_rounds["round_id"].drop_nulls().to_list()
+    holes = storage.read_table("holes")
+    shots = storage.read_table("shots")
+    target_holes = (
+        holes.filter(pl.col("round_id").is_in(round_ids))
+        if not holes.is_empty() and "round_id" in holes.columns
+        else pl.DataFrame()
+    )
+    target_shots = (
+        shots.filter(pl.col("round_id").is_in(round_ids))
+        if not shots.is_empty() and "round_id" in shots.columns
+        else pl.DataFrame()
+    )
+
+    summary = build_summary_stats(target_rounds, target_holes, target_shots)
+    hole_stats = build_course_hole_stats(target_rounds, target_holes)
+    focus = build_course_focus_stats(hole_stats)
+
+    _render_mapping(f"Course Summary: {course}", summary)
+    _render_mapping(f"Next Round Focus: {course}", focus)
+    if hole_stats.is_empty():
+        _console().print("No hole-level data is available for this course yet.")
+        return
+    _render_course_holes_table(course, hole_stats)
+
+
 @stats_app.command("round")
 def stats_round(round_id: int = ROUND_ID_REQUIRED_OPTION) -> None:
     """Print local statistics for one round."""
@@ -419,6 +497,66 @@ def _render_rounds_table(rounds: pl.DataFrame) -> None:
     _console().print(table)
 
 
+def _render_courses_table(rounds: pl.DataFrame) -> None:
+    table = Table(title="Local Courses")
+    table.add_column("course_name")
+    table.add_column("rounds", justify="right")
+    table.add_column("first_played")
+    table.add_column("last_played")
+
+    for row in _build_courses_table(rounds).iter_rows(named=True):
+        table.add_row(
+            str(row.get("course_name") or ""),
+            str(row.get("rounds_played") or ""),
+            str(row.get("first_played") or ""),
+            str(row.get("last_played") or ""),
+        )
+    _console().print(table)
+
+
+def _render_course_holes_table(course: str, hole_stats: pl.DataFrame) -> None:
+    table = Table(title=f"Course Holes: {course}")
+    columns = [
+        "hole_number",
+        "rounds_played",
+        "par",
+        "avg_strokes",
+        "avg_to_par",
+        "par_or_better_pct",
+        "bogey_or_worse_pct",
+        "double_or_worse_pct",
+        "gir_pct",
+        "fairway_hit_pct",
+        "three_putt_pct",
+        "penalty_rate",
+    ]
+    for column in columns:
+        justify = "right" if column != "hole_number" else "right"
+        table.add_column(column, justify=justify)
+
+    for row in hole_stats.iter_rows(named=True):
+        table.add_row(*[str(row.get(column) or "") for column in columns])
+    _console().print(table)
+
+
+def _build_courses_table(rounds: pl.DataFrame) -> pl.DataFrame:
+    if rounds.is_empty() or "display_course_name" not in rounds.columns:
+        return pl.DataFrame()
+    return (
+        rounds.drop_nulls(["display_course_name"])
+        .group_by("display_course_name")
+        .agg(
+            [
+                pl.col("round_id").n_unique().alias("rounds_played"),
+                pl.col("played_on").drop_nulls().min().alias("first_played"),
+                pl.col("played_on").drop_nulls().max().alias("last_played"),
+            ]
+        )
+        .rename({"display_course_name": "course_name"})
+        .sort(["rounds_played", "course_name"], descending=[True, False], nulls_last=True)
+    )
+
+
 def _prepare_rounds_for_display(rounds: pl.DataFrame) -> pl.DataFrame:
     if rounds.is_empty():
         return rounds
@@ -469,6 +607,50 @@ def _prepare_rounds_for_display(rounds: pl.DataFrame) -> pl.DataFrame:
             pl.col("display_course_name"),
         ]
     )
+
+
+def _load_canonical_rounds(
+    *,
+    date_from: str | None,
+    date_to: str | None,
+    period: str | None,
+) -> pl.DataFrame:
+    storage = _storage()
+    rounds = storage.read_table("rounds")
+    if rounds.is_empty():
+        return rounds
+    resolved_from, resolved_to = _resolve_date_window(
+        date_from=date_from,
+        date_to=date_to,
+        period=period,
+    )
+    filtered_rounds, _, _ = _filter_stats_tables(
+        rounds,
+        pl.DataFrame(),
+        pl.DataFrame(),
+        date_from=resolved_from,
+        date_to=resolved_to,
+    )
+    canonical_rounds, _ = _canonicalize_rounds(filtered_rounds)
+    if canonical_rounds.is_empty():
+        return canonical_rounds
+    return canonical_rounds.with_columns(_display_course_expr(canonical_rounds))
+
+
+def _display_course_expr(rounds: pl.DataFrame) -> pl.Expr:
+    if "course_name" in rounds.columns and "location_name" in rounds.columns:
+        return (
+            pl.when(pl.col("course_name").cast(pl.String, strict=False).str.strip_chars() != "")
+            .then(pl.col("course_name"))
+            .otherwise(pl.col("location_name"))
+            .cast(pl.String, strict=False)
+            .alias("display_course_name")
+        )
+    if "course_name" in rounds.columns:
+        return pl.col("course_name").cast(pl.String, strict=False).alias("display_course_name")
+    if "location_name" in rounds.columns:
+        return pl.col("location_name").cast(pl.String, strict=False).alias("display_course_name")
+    return pl.lit("").alias("display_course_name")
 
 
 def _canonicalize_rounds(rounds: pl.DataFrame) -> tuple[pl.DataFrame, dict[int, int]]:

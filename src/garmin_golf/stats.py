@@ -205,9 +205,132 @@ def build_round_stats(
     return summary
 
 
+def build_course_hole_stats(rounds: pl.DataFrame, holes: pl.DataFrame) -> pl.DataFrame:
+    if (
+        rounds.is_empty()
+        or holes.is_empty()
+        or "round_id" not in rounds.columns
+        or "round_id" not in holes.columns
+        or "hole_number" not in holes.columns
+    ):
+        return pl.DataFrame()
+
+    joined = holes.join(rounds.select("round_id"), on="round_id", how="inner")
+    if joined.is_empty():
+        return pl.DataFrame()
+
+    scoring = _holes_with_relative_score(joined)
+    frame = joined.join(
+        scoring.select(["round_id", "hole_number", "to_par"]),
+        on=["round_id", "hole_number"],
+        how="left",
+    )
+    return (
+        frame.group_by("hole_number")
+        .agg(
+            [
+                pl.col("round_id").n_unique().alias("rounds_played"),
+                pl.col("par").drop_nulls().first().alias("par"),
+                pl.col("strokes").cast(pl.Float64, strict=False).mean().alias("avg_strokes"),
+                pl.col("to_par").cast(pl.Float64, strict=False).mean().alias("avg_to_par"),
+                _pct_expr(pl.col("to_par") <= 0).alias("par_or_better_pct"),
+                _pct_expr(pl.col("to_par") >= 1).alias("bogey_or_worse_pct"),
+                _pct_expr(pl.col("to_par") >= 2).alias("double_or_worse_pct"),
+                _pct_expr(pl.col("gir")).alias("gir_pct"),
+                _pct_expr(pl.col("fairway_hit")).alias("fairway_hit_pct"),
+                _pct_expr(pl.col("putts") >= 3).alias("three_putt_pct"),
+                pl.col("penalties")
+                .cast(pl.Float64, strict=False)
+                .fill_null(0)
+                .mean()
+                .alias("penalty_rate"),
+                pl.col("putts").cast(pl.Float64, strict=False).mean().alias("avg_putts"),
+            ]
+        )
+        .sort(
+            by=["avg_to_par", "penalty_rate", "hole_number"],
+            descending=[True, True, False],
+            nulls_last=True,
+        )
+        .with_columns(
+            [
+                pl.col("avg_strokes").round(2),
+                pl.col("avg_to_par").round(2),
+                pl.col("par_or_better_pct").round(2),
+                pl.col("bogey_or_worse_pct").round(2),
+                pl.col("double_or_worse_pct").round(2),
+                pl.col("gir_pct").round(2),
+                pl.col("fairway_hit_pct").round(2),
+                pl.col("three_putt_pct").round(2),
+                pl.col("penalty_rate").round(2),
+                pl.col("avg_putts").round(2),
+            ]
+        )
+    )
+
+
+def build_course_focus_stats(hole_stats: pl.DataFrame) -> dict[str, str]:
+    if hole_stats.is_empty() or "hole_number" not in hole_stats.columns:
+        return {
+            "hardest_holes": "",
+            "penalty_holes": "",
+            "three_putt_holes": "",
+            "gir_trouble_holes": "",
+        }
+
+    return {
+        "hardest_holes": _format_hole_focus(
+            hole_stats,
+            "avg_to_par",
+            suffix=" to par",
+            highest=True,
+        ),
+        "penalty_holes": _format_hole_focus(
+            hole_stats, "penalty_rate", suffix=" penalties", highest=True
+        ),
+        "three_putt_holes": _format_hole_focus(
+            hole_stats, "three_putt_pct", suffix="% 3-putts", highest=True
+        ),
+        "gir_trouble_holes": _format_hole_focus(
+            hole_stats, "gir_pct", suffix="% GIR", highest=False
+        ),
+    }
+
+
 def _mean(series: pl.Series) -> float:
     value = series.cast(pl.Float64, strict=False).drop_nulls().mean()
     return float(cast(int | float, value)) if value is not None else 0.0
+
+
+def _pct_expr(expr: pl.Expr) -> pl.Expr:
+    return expr.cast(pl.Float64, strict=False).mean() * 100
+
+
+def _format_hole_focus(
+    hole_stats: pl.DataFrame,
+    column: str,
+    *,
+    suffix: str,
+    highest: bool,
+    limit: int = 3,
+) -> str:
+    if column not in hole_stats.columns:
+        return ""
+    valid = hole_stats.drop_nulls([column]).sort(
+        by=[column, "hole_number"],
+        descending=[highest, False],
+        nulls_last=True,
+    )
+    if valid.is_empty():
+        return ""
+    parts: list[str] = []
+    for row in valid.head(limit).iter_rows(named=True):
+        hole_number = row.get("hole_number")
+        value = row.get(column)
+        if not isinstance(hole_number, int | float) or not isinstance(value, int | float):
+            continue
+        parts.append(f"{int(hole_number)} ({float(value):.2f}{suffix})")
+    return ", ".join(parts)
 
 
 def _ratio_mean(series: pl.Series) -> float:

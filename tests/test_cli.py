@@ -296,6 +296,128 @@ def test_stats_rounds_command_prefers_scorecard_over_matching_activity(
     assert "2001" not in result.stdout
 
 
+def test_stats_courses_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [
+            {"round_id": 1, "played_on": "2025-06-01", "course_name": "Blue Hills"},
+            {"round_id": 2, "played_on": "2025-06-08", "course_name": "Blue Hills"},
+            {"round_id": 3, "played_on": "2025-06-03", "course_name": "Red Oaks"},
+        ],
+        unique_by=["round_id"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "courses"])
+
+    assert result.exit_code == 0
+    assert "Local Courses" in result.stdout
+    assert "Blue Hills" in result.stdout
+    assert "Red Oaks" in result.stdout
+    assert result.stdout.index("Blue Hills") < result.stdout.index("Red Oaks")
+
+
+def test_stats_course_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [
+            {
+                "round_id": 1,
+                "played_on": "2025-06-01",
+                "course_name": "Blue Hills",
+                "total_score": 82,
+                "total_par": 72,
+            },
+            {
+                "round_id": 2,
+                "played_on": "2025-06-08",
+                "course_name": "Blue Hills",
+                "total_score": 86,
+                "total_par": 72,
+            },
+        ],
+        unique_by=["round_id"],
+    )
+    storage.upsert_rows(
+        "holes",
+        [
+            {
+                "round_id": 1,
+                "hole_number": 1,
+                "par": 4,
+                "strokes": 5,
+                "putts": 2,
+                "gir": False,
+                "fairway_hit": False,
+                "penalties": 1,
+            },
+            {
+                "round_id": 2,
+                "hole_number": 1,
+                "par": 4,
+                "strokes": 6,
+                "putts": 3,
+                "gir": False,
+                "fairway_hit": False,
+                "penalties": 0,
+            },
+            {
+                "round_id": 1,
+                "hole_number": 2,
+                "par": 3,
+                "strokes": 3,
+                "putts": 1,
+                "gir": True,
+                "fairway_hit": None,
+                "penalties": 0,
+            },
+            {
+                "round_id": 2,
+                "hole_number": 2,
+                "par": 3,
+                "strokes": 4,
+                "putts": 2,
+                "gir": False,
+                "fairway_hit": None,
+                "penalties": 0,
+            },
+        ],
+        unique_by=["round_id", "hole_number"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "course", "--course", "Blue Hills"])
+
+    assert result.exit_code == 0
+    assert "Course Summary: Blue Hills" in result.stdout
+    assert "Next Round Focus: Blue Hills" in result.stdout
+    assert "Course Holes: Blue Hills" in result.stdout
+    assert "hardest_holes" in result.stdout
+    assert "1 (1.50 to par)" in result.stdout
+
+
+def test_stats_course_command_rejects_unknown_course(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [{"round_id": 1, "played_on": "2025-06-01", "course_name": "Blue Hills"}],
+        unique_by=["round_id"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "course", "--course", "Unknown"])
+
+    assert result.exit_code != 0
+    assert "Course not found: Unknown." in result.output
+
+
 def test_stats_summary_command_deduplicates_matching_activity_round(
     monkeypatch: MonkeyPatch, tmp_path: Path
 ) -> None:

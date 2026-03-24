@@ -1,6 +1,11 @@
 import polars as pl
 
-from garmin_golf.stats import build_round_stats, build_summary_stats
+from garmin_golf.stats import (
+    build_course_focus_stats,
+    build_course_hole_stats,
+    build_round_stats,
+    build_summary_stats,
+)
 
 
 def test_build_summary_stats() -> None:
@@ -185,3 +190,103 @@ def test_build_summary_stats_with_9_and_18_hole_rounds() -> None:
     assert summary["average_putts_per_18"] == 36.0
     assert summary["average_shots_per_round"] == 13.5
     assert summary["average_shots_per_18"] == 18.0
+
+
+def test_build_course_hole_stats() -> None:
+    rounds = pl.DataFrame(
+        [
+            {"round_id": 1, "display_course_name": "Blue Hills"},
+            {"round_id": 2, "display_course_name": "Blue Hills"},
+        ]
+    )
+    holes = pl.DataFrame(
+        [
+            {
+                "round_id": 1,
+                "hole_number": 1,
+                "par": 4,
+                "strokes": 5,
+                "putts": 2,
+                "gir": False,
+                "fairway_hit": False,
+                "penalties": 1,
+            },
+            {
+                "round_id": 2,
+                "hole_number": 1,
+                "par": 4,
+                "strokes": 4,
+                "putts": 1,
+                "gir": True,
+                "fairway_hit": True,
+                "penalties": 0,
+            },
+            {
+                "round_id": 1,
+                "hole_number": 2,
+                "par": 3,
+                "strokes": 3,
+                "putts": 1,
+                "gir": True,
+                "fairway_hit": None,
+                "penalties": 0,
+            },
+            {
+                "round_id": 2,
+                "hole_number": 2,
+                "par": 3,
+                "strokes": 5,
+                "putts": 3,
+                "gir": False,
+                "fairway_hit": None,
+                "penalties": 0,
+            },
+        ]
+    )
+
+    hole_stats = build_course_hole_stats(rounds, holes)
+
+    first_hole = hole_stats.filter(pl.col("hole_number") == 2).row(0, named=True)
+    assert first_hole["rounds_played"] == 2
+    assert first_hole["avg_strokes"] == 4.0
+    assert first_hole["avg_to_par"] == 1.0
+    assert first_hole["three_putt_pct"] == 50.0
+
+    second_hole = hole_stats.filter(pl.col("hole_number") == 1).row(0, named=True)
+    assert second_hole["par_or_better_pct"] == 50.0
+    assert second_hole["penalty_rate"] == 0.5
+
+
+def test_build_course_focus_stats() -> None:
+    hole_stats = pl.DataFrame(
+        [
+            {
+                "hole_number": 4,
+                "avg_to_par": 1.2,
+                "penalty_rate": 0.8,
+                "three_putt_pct": 5.0,
+                "gir_pct": 30.0,
+            },
+            {
+                "hole_number": 7,
+                "avg_to_par": 0.7,
+                "penalty_rate": 0.2,
+                "three_putt_pct": 20.0,
+                "gir_pct": 40.0,
+            },
+            {
+                "hole_number": 2,
+                "avg_to_par": 0.1,
+                "penalty_rate": 0.0,
+                "three_putt_pct": 10.0,
+                "gir_pct": 70.0,
+            },
+        ]
+    )
+
+    focus = build_course_focus_stats(hole_stats)
+
+    assert focus["hardest_holes"].startswith("4 (1.20 to par)")
+    assert focus["penalty_holes"].startswith("4 (0.80 penalties)")
+    assert focus["three_putt_holes"].startswith("7 (20.00% 3-putts)")
+    assert focus["gir_trouble_holes"].startswith("4 (30.00% GIR)")

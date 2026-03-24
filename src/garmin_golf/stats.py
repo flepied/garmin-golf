@@ -182,10 +182,20 @@ def build_round_stats(
     shots: pl.DataFrame | None,
     round_id: int,
 ) -> dict[str, float | int | str]:
-    target_rounds = rounds.filter(pl.col("round_id") == round_id)
-    target_holes = holes.filter(pl.col("round_id") == round_id)
+    target_rounds = (
+        rounds.filter(pl.col("round_id") == round_id)
+        if "round_id" in rounds.columns
+        else pl.DataFrame()
+    )
+    target_holes = (
+        holes.filter(pl.col("round_id") == round_id)
+        if "round_id" in holes.columns
+        else pl.DataFrame()
+    )
     target_shots = (
-        shots.filter(pl.col("round_id") == round_id) if shots is not None else pl.DataFrame()
+        shots.filter(pl.col("round_id") == round_id)
+        if shots is not None and "round_id" in shots.columns
+        else pl.DataFrame()
     )
     if target_rounds.is_empty():
         msg = f"Round {round_id} was not found in the local dataset."

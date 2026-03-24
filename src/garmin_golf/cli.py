@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 from collections.abc import Mapping
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
@@ -91,6 +91,7 @@ PERIOD_OPTION = typer.Option(
     "--period",
     help="Shortcut period: last-12-months, this-year, or last-year.",
 )
+ROUND_MATCH_TOLERANCE = timedelta(hours=2)
 
 
 @auth_app.command("login")
@@ -232,12 +233,47 @@ def stats_summary(
         date_from=resolved_from,
         date_to=resolved_to,
     )
+    canonical_rounds, _ = _canonicalize_rounds(filtered_rounds)
     summary = build_summary_stats(
-        filtered_rounds,
+        canonical_rounds,
         filtered_holes,
         filtered_shots,
     )
     _render_mapping("Golf Summary", summary)
+
+
+@stats_app.command("rounds")
+def stats_rounds(
+    date_from: str | None = DATE_FROM_OPTION,
+    date_to: str | None = DATE_TO_OPTION,
+    period: str | None = PERIOD_OPTION,
+) -> None:
+    """List local rounds and round ids for round-level stats lookup."""
+
+    storage = _storage()
+    rounds = storage.read_table("rounds")
+    if rounds.is_empty():
+        _console().print("No local rounds found. Run `garmin-golf sync rounds` first.")
+        return
+
+    resolved_from, resolved_to = _resolve_date_window(
+        date_from=date_from,
+        date_to=date_to,
+        period=period,
+    )
+    filtered_rounds, _, _ = _filter_stats_tables(
+        rounds,
+        pl.DataFrame(),
+        pl.DataFrame(),
+        date_from=resolved_from,
+        date_to=resolved_to,
+    )
+    canonical_rounds, _ = _canonicalize_rounds(filtered_rounds)
+    if canonical_rounds.is_empty():
+        _console().print("No rounds matched the selected date window.")
+        return
+
+    _render_rounds_table(canonical_rounds)
 
 
 @stats_app.command("round")
@@ -245,13 +281,16 @@ def stats_round(round_id: int = ROUND_ID_REQUIRED_OPTION) -> None:
     """Print local statistics for one round."""
 
     storage = _storage()
+    rounds = storage.read_table("rounds")
+    canonical_rounds, round_aliases = _canonicalize_rounds(rounds)
+    resolved_round_id = round_aliases.get(round_id, round_id)
     summary = build_round_stats(
-        storage.read_table("rounds"),
+        canonical_rounds,
         storage.read_table("holes"),
         storage.read_table("shots"),
-        round_id,
+        resolved_round_id,
     )
-    _render_mapping(f"Round {round_id}", summary)
+    _render_mapping(f"Round {resolved_round_id}", summary)
 
 
 @inspect_app.command("fit")
@@ -359,6 +398,211 @@ def _render_mapping(title: str, values: Mapping[str, object]) -> None:
     for key, value in values.items():
         table.add_row(key, str(value))
     _console().print(table)
+
+
+def _render_rounds_table(rounds: pl.DataFrame) -> None:
+    table = Table(title="Local Rounds")
+    table.add_column("round_id", justify="right")
+    table.add_column("played_on")
+    table.add_column("course_name")
+
+    display_rounds = _prepare_rounds_for_display(rounds)
+    for row in display_rounds.iter_rows(named=True):
+        round_id = row.get("round_id")
+        played_on = row.get("played_on")
+        course_name = row.get("display_course_name")
+        table.add_row(
+            "" if round_id is None else str(round_id),
+            "" if played_on is None else str(played_on),
+            "" if course_name is None else str(course_name),
+        )
+    _console().print(table)
+
+
+def _prepare_rounds_for_display(rounds: pl.DataFrame) -> pl.DataFrame:
+    if rounds.is_empty():
+        return rounds
+
+    frame = rounds.with_columns(
+        [
+            (
+                pl.when(
+                    pl.col("course_name").cast(pl.String, strict=False).str.strip_chars() != ""
+                )
+                .then(pl.col("course_name"))
+                .otherwise(pl.col("location_name"))
+                .cast(pl.String, strict=False)
+                .alias("display_course_name")
+                if "course_name" in rounds.columns and "location_name" in rounds.columns
+                else (
+                    pl.col("course_name").cast(pl.String, strict=False).alias("display_course_name")
+                    if "course_name" in rounds.columns
+                    else (
+                        pl.col("location_name")
+                        .cast(pl.String, strict=False)
+                        .alias("display_course_name")
+                        if "location_name" in rounds.columns
+                        else pl.lit("").alias("display_course_name")
+                    )
+                )
+            ),
+            (
+                pl.col("played_on").str.to_date(strict=False).alias("_played_on_date")
+                if "played_on" in rounds.columns
+                else pl.lit(None, dtype=pl.Date).alias("_played_on_date")
+            ),
+            (
+                pl.col("round_id").cast(pl.Int64, strict=False).alias("_round_id_sort")
+                if "round_id" in rounds.columns
+                else pl.lit(None, dtype=pl.Int64).alias("_round_id_sort")
+            ),
+        ]
+    )
+    return frame.sort(
+        by=["_played_on_date", "_round_id_sort"],
+        descending=[True, True],
+        nulls_last=True,
+    ).select(
+        [
+            pl.col("round_id") if "round_id" in frame.columns else pl.lit(None).alias("round_id"),
+            pl.col("played_on") if "played_on" in frame.columns else pl.lit("").alias("played_on"),
+            pl.col("display_course_name"),
+        ]
+    )
+
+
+def _canonicalize_rounds(rounds: pl.DataFrame) -> tuple[pl.DataFrame, dict[int, int]]:
+    if rounds.is_empty() or "round_id" not in rounds.columns:
+        return rounds, {}
+
+    scorecard_rows: list[dict[str, object]] = []
+    activity_rows: list[dict[str, object]] = []
+    scorecards_by_date: dict[str, list[dict[str, object]]] = {}
+    for row in rounds.to_dicts():
+        if isinstance(row.get("scorecard_id"), int):
+            scorecard_rows.append(row)
+            played_on = row.get("played_on")
+            if isinstance(played_on, str):
+                scorecards_by_date.setdefault(played_on, []).append(row)
+        elif isinstance(row.get("activity_id"), int):
+            activity_rows.append(row)
+        else:
+            scorecard_rows.append(row)
+
+    round_aliases: dict[int, int] = {}
+    activity_by_scorecard_id: dict[int, dict[str, object]] = {}
+    used_scorecard_ids: set[int] = set()
+
+    for activity_row in activity_rows:
+        match = _find_matching_scorecard(activity_row, scorecards_by_date, used_scorecard_ids)
+        if match is None:
+            continue
+        activity_round_id = activity_row.get("round_id")
+        scorecard_round_id = match.get("round_id")
+        if isinstance(activity_round_id, int) and isinstance(scorecard_round_id, int):
+            round_aliases[activity_round_id] = scorecard_round_id
+            used_scorecard_ids.add(scorecard_round_id)
+            activity_by_scorecard_id[scorecard_round_id] = activity_row
+
+    canonical_rows: list[dict[str, object]] = []
+    for scorecard_row in scorecard_rows:
+        scorecard_round_id = scorecard_row.get("round_id")
+        if isinstance(scorecard_round_id, int) and scorecard_round_id in activity_by_scorecard_id:
+            canonical_rows.append(
+                _merge_scorecard_and_activity_round(
+                    scorecard_row,
+                    activity_by_scorecard_id[scorecard_round_id],
+                )
+            )
+        else:
+            canonical_rows.append(scorecard_row)
+
+    for activity_row in activity_rows:
+        activity_round_id = activity_row.get("round_id")
+        if not isinstance(activity_round_id, int) or activity_round_id not in round_aliases:
+            canonical_rows.append(activity_row)
+
+    if not canonical_rows:
+        return rounds.head(0), round_aliases
+    return pl.DataFrame(canonical_rows, schema=rounds.schema), round_aliases
+
+
+def _find_matching_scorecard(
+    activity_row: dict[str, object],
+    scorecards_by_date: dict[str, list[dict[str, object]]],
+    used_scorecard_ids: set[int],
+) -> dict[str, object] | None:
+    played_on = activity_row.get("played_on")
+    if not isinstance(played_on, str):
+        return None
+
+    candidates = [
+        candidate
+        for candidate in scorecards_by_date.get(played_on, [])
+        if isinstance(candidate.get("round_id"), int)
+        and candidate["round_id"] not in used_scorecard_ids
+    ]
+    if not candidates:
+        return None
+
+    same_player = [
+        candidate for candidate in candidates if _same_player_profile(candidate, activity_row)
+    ]
+    if same_player:
+        candidates = same_player
+
+    activity_start = _parse_round_start_time(activity_row.get("start_time"))
+    timed_candidates: list[tuple[timedelta, dict[str, object]]] = []
+    for candidate in candidates:
+        candidate_start = _parse_round_start_time(candidate.get("start_time"))
+        if activity_start is None or candidate_start is None:
+            continue
+        time_delta = abs(activity_start - candidate_start)
+        if time_delta <= ROUND_MATCH_TOLERANCE:
+            timed_candidates.append((time_delta, candidate))
+
+    if timed_candidates:
+        timed_candidates.sort(key=lambda item: item[0])
+        return timed_candidates[0][1]
+
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _merge_scorecard_and_activity_round(
+    scorecard_row: dict[str, object],
+    activity_row: dict[str, object],
+) -> dict[str, object]:
+    merged = dict(activity_row)
+    merged.update(scorecard_row)
+    if merged.get("activity_id") is None:
+        merged["activity_id"] = activity_row.get("activity_id")
+    if not merged.get("location_name"):
+        merged["location_name"] = activity_row.get("location_name")
+    merged["data_source"] = "scorecard+activity"
+    return merged
+
+
+def _same_player_profile(left: dict[str, object], right: dict[str, object]) -> bool:
+    left_profile_id = left.get("player_profile_id")
+    right_profile_id = right.get("player_profile_id")
+    if isinstance(left_profile_id, int) and isinstance(right_profile_id, int):
+        return left_profile_id == right_profile_id
+    return True
+
+
+def _parse_round_start_time(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        return parsed.astimezone().replace(tzinfo=None)
+    return parsed
 
 
 def _parse_optional_date(value: str | None, option_name: str) -> date | None:

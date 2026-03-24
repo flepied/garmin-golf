@@ -19,6 +19,7 @@ uv run garmin-golf auth login
 uv run garmin-golf sync rounds --from 2025-01-01
 uv run garmin-golf mirror scorecards --url https://connect.garmin.com/app/scorecards/<username>
 uv run garmin-golf sync shots
+uv run garmin-golf stats rounds
 uv run garmin-golf stats summary
 ```
 
@@ -29,6 +30,8 @@ data is available.
 You can scope stats to a date window:
 
 ```bash
+uv run garmin-golf stats rounds --from 2025-01-01 --to 2025-12-31
+uv run garmin-golf stats rounds --period last-12-months
 uv run garmin-golf stats summary --from 2025-01-01 --to 2025-12-31
 uv run garmin-golf stats summary --period last-12-months
 uv run garmin-golf stats summary --period last-year
@@ -36,6 +39,13 @@ uv run garmin-golf stats summary --period last-year
 
 Supported `--period` values are `last-12-months`, `this-year`, and `last-year`.
 Use either `--period` or `--from/--to`, not both.
+
+To inspect a single round after discovering its id:
+
+```bash
+uv run garmin-golf stats rounds
+uv run garmin-golf stats round --round-id 22068626916
+```
 
 ## Environment
 

@@ -5,6 +5,7 @@ from garmin_golf.stats import (
     build_course_focus_stats,
     build_course_hole_stats,
     build_round_stats,
+    build_second_shot_stats,
     build_summary_stats,
 )
 
@@ -332,3 +333,31 @@ def test_build_practice_focus_stats() -> None:
     assert "Lag putting:" in combined
     assert str(focus["priority_3"]) != ""
     assert float(focus["estimated_strokes_to_save_per_18"]) > 0.0
+
+
+def test_build_second_shot_stats() -> None:
+    holes = pl.DataFrame(
+        [
+            {"round_id": 1, "hole_number": 1, "par": 4, "strokes": 4},
+            {"round_id": 1, "hole_number": 2, "par": 5, "strokes": 6},
+            {"round_id": 2, "hole_number": 1, "par": 4, "strokes": 5},
+        ]
+    )
+    shots = pl.DataFrame(
+        [
+            {"round_id": 1, "hole_number": 1, "shot_number": 2, "club": "8 Iron", "distance_meters": 135.0},
+            {"round_id": 1, "hole_number": 2, "shot_number": 2, "club": "3 Wood", "distance_meters": 205.0},
+            {"round_id": 2, "hole_number": 1, "shot_number": 2, "club": "3 Wood", "distance_meters": 195.0},
+            {"round_id": 2, "hole_number": 1, "shot_number": 3, "club": "Wedge", "distance_meters": 80.0},
+        ]
+    )
+
+    stats = build_second_shot_stats(holes, shots)
+
+    assert stats.height == 3
+    par4_three_wood = stats.filter((pl.col("par") == 4) & (pl.col("club") == "3 Wood")).row(0, named=True)
+    assert par4_three_wood["second_shots"] == 1
+    assert par4_three_wood["avg_distance_m"] == 195.0
+    assert par4_three_wood["bogey_or_worse_pct"] == 100.0
+    par5_three_wood = stats.filter((pl.col("par") == 5) & (pl.col("club") == "3 Wood")).row(0, named=True)
+    assert par5_three_wood["avg_to_par"] == 1.0

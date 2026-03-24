@@ -16,6 +16,7 @@ from .stats import (
     build_course_focus_stats,
     build_course_hole_stats,
     build_round_stats,
+    build_second_shot_stats,
     build_summary_stats,
 )
 from .storage import Storage
@@ -35,6 +36,30 @@ def _console() -> Console:
 
 def _storage() -> Storage:
     return Storage(get_settings())
+
+
+def _shots_with_configured_club_names(shots: pl.DataFrame) -> pl.DataFrame:
+    if shots.is_empty() or "club_id" not in shots.columns:
+        return shots
+
+    overrides: dict[int, str] = {}
+    for key, value in get_settings().club_name_overrides.items():
+        try:
+            overrides[int(key)] = value
+        except (TypeError, ValueError):
+            continue
+    if not overrides:
+        return shots
+
+    fields = ["club_id"] + (["club"] if "club" in shots.columns else [])
+    return shots.with_columns(
+        pl.struct(fields)
+        .map_elements(
+            lambda row: overrides.get(row["club_id"]) or row.get("club"),
+            return_dtype=pl.String,
+        )
+        .alias("club")
+    )
 
 
 DATE_FROM_OPTION = typer.Option(None, "--from", help="Inclusive round date in YYYY-MM-DD format.")
@@ -148,7 +173,7 @@ def stats_summary(
     )
     rounds = storage.read_table("rounds")
     holes = storage.read_table("holes")
-    shots = storage.read_table("shots")
+    shots = _shots_with_configured_club_names(storage.read_table("shots"))
     filtered_rounds, filtered_holes, filtered_shots = _filter_stats_tables(
         rounds,
         holes,
@@ -185,7 +210,7 @@ def stats_practice_focus(
         period=period,
     )
     holes = storage.read_table("holes")
-    shots = storage.read_table("shots")
+    shots = _shots_with_configured_club_names(storage.read_table("shots"))
     filtered_rounds, filtered_holes, filtered_shots = _filter_stats_tables(
         rounds,
         holes,
@@ -196,6 +221,58 @@ def stats_practice_focus(
     canonical_rounds, _ = _canonicalize_rounds(filtered_rounds)
     focus = build_practice_focus_stats(canonical_rounds, filtered_holes, filtered_shots)
     _render_mapping("Practice Focus", focus)
+
+
+@stats_app.command("second-shots")
+def stats_second_shots(
+    date_from: str | None = DATE_FROM_OPTION,
+    date_to: str | None = DATE_TO_OPTION,
+    period: str | None = PERIOD_OPTION,
+) -> None:
+    """Show second-shot club usage and outcomes on par 4s and par 5s."""
+
+    storage = _storage()
+    rounds = storage.read_table("rounds")
+    if rounds.is_empty():
+        _console().print("No local rounds found. Run `garmin-golf mirror scorecards ...` first.")
+        return
+
+    resolved_from, resolved_to = _resolve_date_window(
+        date_from=date_from,
+        date_to=date_to,
+        period=period,
+    )
+    holes = storage.read_table("holes")
+    shots = _shots_with_configured_club_names(storage.read_table("shots"))
+    _, filtered_holes, filtered_shots = _filter_stats_tables(
+        rounds,
+        holes,
+        shots,
+        date_from=resolved_from,
+        date_to=resolved_to,
+    )
+    second_shots = build_second_shot_stats(filtered_holes, filtered_shots)
+    if second_shots.is_empty():
+        _console().print("No par-4 or par-5 second-shot data is available for this selection.")
+        return
+    _render_second_shots_table(second_shots)
+
+
+@stats_app.command("clubs")
+def stats_clubs() -> None:
+    """List observed club ids with inferred and configured names."""
+
+    raw_shots = _storage().read_table("shots")
+    if raw_shots.is_empty() or "club_id" not in raw_shots.columns:
+        _console().print("No club data is available yet. Run `garmin-golf mirror scorecards ...` first.")
+        return
+
+    resolved_shots = _shots_with_configured_club_names(raw_shots)
+    club_inventory = _build_club_inventory_table(raw_shots, resolved_shots)
+    if club_inventory.is_empty():
+        _console().print("No club ids were found in the local shot dataset.")
+        return
+    _render_club_inventory_table(club_inventory)
 
 
 @stats_app.command("rounds")
@@ -280,7 +357,7 @@ def stats_course(
 
     round_ids = target_rounds["round_id"].drop_nulls().to_list()
     holes = storage.read_table("holes")
-    shots = storage.read_table("shots")
+    shots = _shots_with_configured_club_names(storage.read_table("shots"))
     target_holes = (
         holes.filter(pl.col("round_id").is_in(round_ids))
         if not holes.is_empty() and "round_id" in holes.columns
@@ -315,7 +392,7 @@ def stats_round(round_id: int = ROUND_ID_REQUIRED_OPTION) -> None:
     summary = build_round_stats(
         canonical_rounds,
         storage.read_table("holes"),
-        storage.read_table("shots"),
+        _shots_with_configured_club_names(storage.read_table("shots")),
         resolved_round_id,
     )
     _render_mapping(f"Round {resolved_round_id}", summary)
@@ -389,6 +466,135 @@ def _render_course_holes_table(course: str, hole_stats: pl.DataFrame) -> None:
     for row in hole_stats.iter_rows(named=True):
         table.add_row(*[str(row.get(column) or "") for column in columns])
     _console().print(table)
+
+
+def _render_second_shots_table(second_shots: pl.DataFrame) -> None:
+    table = Table(title="Second Shots")
+    columns = [
+        "par",
+        "club",
+        "second_shots",
+        "rounds",
+        "avg_distance_m",
+        "par_or_better_pct",
+        "bogey_or_worse_pct",
+        "double_or_worse_pct",
+        "avg_to_par",
+    ]
+    for column in columns:
+        table.add_column(column, justify="right" if column != "club" else "left")
+
+    for row in second_shots.iter_rows(named=True):
+        table.add_row(*[str(row.get(column) or "") for column in columns])
+    _console().print(table)
+
+
+def _render_club_inventory_table(club_inventory: pl.DataFrame) -> None:
+    table = Table(title="Clubs")
+    columns = [
+        "club_id",
+        "default_name",
+        "configured_name",
+        "shots",
+        "avg_distance_m",
+        "shot_type_breakdown",
+        "tee_avg_m",
+        "approach_avg_m",
+        "layup_avg_m",
+        "chip_avg_m",
+    ]
+    for column in columns:
+        table.add_column(
+            column,
+            justify="right" if column in {"club_id", "shots"} or column.endswith("_avg_m") else "left",
+        )
+
+    for row in club_inventory.iter_rows(named=True):
+        table.add_row(*[str(row.get(column) or "") for column in columns])
+    _console().print(table)
+
+
+def _build_club_inventory_table(raw_shots: pl.DataFrame, resolved_shots: pl.DataFrame) -> pl.DataFrame:
+    if raw_shots.is_empty() or "club_id" not in raw_shots.columns:
+        return pl.DataFrame()
+
+    default_name_column = (
+        pl.col("club").cast(pl.String, strict=False).fill_null("Unknown")
+        if "club" in raw_shots.columns
+        else pl.lit("Unknown")
+    )
+    configured_name_column = (
+        pl.col("club").cast(pl.String, strict=False).fill_null("Unknown")
+        if "club" in resolved_shots.columns
+        else pl.lit("Unknown")
+    )
+
+    defaults = raw_shots.group_by("club_id").agg(
+        [
+            default_name_column.first().alias("default_name"),
+            pl.len().alias("shots"),
+            (
+                pl.col("distance_meters").cast(pl.Float64, strict=False).mean().round(1).alias("avg_distance_m")
+                if "distance_meters" in raw_shots.columns
+                else pl.lit(None, dtype=pl.Float64).alias("avg_distance_m")
+            ),
+        ]
+    )
+    configured = resolved_shots.group_by("club_id").agg(
+        configured_name_column.first().alias("configured_name")
+    )
+    by_type = (
+        raw_shots.group_by(["club_id", "shot_type"])
+        .agg(
+            [
+                pl.len().alias("count"),
+                (
+                    pl.col("distance_meters")
+                    .cast(pl.Float64, strict=False)
+                    .mean()
+                    .round(1)
+                    .alias("avg_distance_m")
+                    if "distance_meters" in raw_shots.columns
+                    else pl.lit(None, dtype=pl.Float64).alias("avg_distance_m")
+                ),
+            ]
+        )
+        .sort(["club_id", "count", "shot_type"], descending=[False, True, False], nulls_last=True)
+        if "shot_type" in raw_shots.columns
+        else pl.DataFrame()
+    )
+    if not by_type.is_empty():
+        by_type_rows: list[dict[str, object]] = []
+        for club_id, frame in by_type.partition_by("club_id", as_dict=True).items():
+            rows = frame.to_dicts()
+            breakdown = ", ".join(
+                f"{(row.get('shot_type') or 'Unknown')}: {row.get('count')}" for row in rows[:4]
+            )
+            distance_by_type = {
+                row.get("shot_type"): row.get("avg_distance_m")
+                for row in rows
+                if isinstance(row.get("shot_type"), str)
+            }
+            by_type_rows.append(
+                {
+                    "club_id": club_id[0] if isinstance(club_id, tuple) else club_id,
+                    "shot_type_breakdown": breakdown,
+                    "tee_avg_m": distance_by_type.get("TEE"),
+                    "approach_avg_m": distance_by_type.get("APPROACH"),
+                    "layup_avg_m": distance_by_type.get("LAYUP"),
+                    "chip_avg_m": distance_by_type.get("CHIP"),
+                }
+            )
+        by_type_summary = pl.DataFrame(by_type_rows)
+    else:
+        by_type_summary = pl.DataFrame()
+    result = defaults.join(configured, on="club_id", how="left")
+    if not by_type_summary.is_empty():
+        result = result.join(by_type_summary, on="club_id", how="left")
+    return (
+        result.with_columns(pl.col("configured_name").fill_null(pl.col("default_name")))
+        .sort(["shots", "club_id"], descending=[True, False], nulls_last=True)
+    )
 
 
 def _build_courses_table(rounds: pl.DataFrame) -> pl.DataFrame:

@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     )
 
     data_dir: Path = Field(default=Path("data"))
+    club_name_overrides: dict[str, str] = Field(default_factory=dict)
     raw_dir_name: str = "raw"
     parquet_dir_name: str = "parquet"
     rounds_table_name: str = "rounds"
@@ -73,4 +74,10 @@ def default_config_template() -> str:
         "# Garmin Golf configuration\n"
         "# Environment variables still override values in this file.\n\n"
         '# data_dir = "/home/you/garmin-golf-data"\n'
+        '\n# Optional club-name overrides keyed by Garmin club_id.\n'
+        '# Use this when Garmin club type inference does not match your actual bag.\n'
+        '# [club_name_overrides]\n'
+        '# "10400964" = "5 Wood"\n'
+        '# "10400967" = "3 Hybrid"\n'
+        '# "10400977" = "56 Wedge"\n'
     )

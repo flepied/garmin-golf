@@ -55,13 +55,16 @@ def test_normalize_round_and_holes() -> None:
 
 def test_normalize_shots() -> None:
     payload = {
+        "clubDetails": [
+            {"id": 10400963, "clubTypeId": 1},
+        ],
         "holeShots": [
             {
                 "holeNumber": 1,
                 "shots": [
                     {
                         "shotNumber": 1,
-                        "club": "Driver",
+                        "clubId": 10400963,
                         "distanceMeters": 211.5,
                         "lie": "Tee",
                         "result": "Fairway",

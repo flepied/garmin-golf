@@ -7,6 +7,25 @@ from typing import Any
 from .models import JsonDict
 
 
+CLUB_TYPE_NAMES: dict[int, str] = {
+    1: "Driver",
+    2: "3 Wood",
+    3: "5 Wood",
+    6: "7 Wood",
+    7: "Hybrid",
+    13: "5 Iron",
+    14: "6 Iron",
+    15: "7 Iron",
+    16: "8 Iron",
+    17: "9 Iron",
+    18: "Pitching Wedge",
+    19: "Gap Wedge",
+    20: "Sand Wedge",
+    21: "Lob Wedge",
+    23: "Putter",
+}
+
+
 def normalize_round(summary: JsonDict, detail: JsonDict) -> dict[str, Any]:
     scorecard = extract_scorecard(detail)
     round_id = scorecard.get("id", summary.get("id"))
@@ -106,6 +125,7 @@ def normalize_holes(round_id: int, detail: JsonDict) -> list[dict[str, Any]]:
 
 
 def normalize_shots(round_id: int, hole_number: int, payload: JsonDict) -> list[dict[str, Any]]:
+    club_lookup = _club_lookup(payload)
     hole_shots = payload.get("holeShots")
     if isinstance(hole_shots, list) and hole_shots:
         hole_payload = next(
@@ -138,7 +158,11 @@ def normalize_shots(round_id: int, hole_number: int, payload: JsonDict) -> list[
                 "scorecard_id": _coalesce_int(shot.get("scorecardId"), default=round_id),
                 "player_profile_id": _coalesce_int(shot.get("playerProfileId")),
                 "shot_order": _coalesce_int(shot.get("shotOrder"), default=index),
-                "club": _coalesce_str(shot.get("club"), _nested_get(shot, "club", "name")),
+                "club": _coalesce_str(
+                    shot.get("club"),
+                    _nested_get(shot, "club", "name"),
+                    club_lookup.get(_coalesce_int(shot.get("clubId"))),
+                ),
                 "club_id": _coalesce_int(shot.get("clubId")),
                 "distance_meters": _coalesce_float(
                     shot.get("meters"),
@@ -218,6 +242,25 @@ def extract_hole_pars(summary: JsonDict, detail: JsonDict) -> list[int]:
         if par is not None:
             parsed.append(par)
     return parsed
+
+
+def _club_lookup(payload: JsonDict) -> dict[int, str]:
+    club_details = payload.get("clubDetails")
+    if not isinstance(club_details, list):
+        return {}
+
+    lookup: dict[int, str] = {}
+    for detail in club_details:
+        if not isinstance(detail, dict):
+            continue
+        club_id = _coalesce_int(detail.get("id"))
+        club_type_id = _coalesce_int(detail.get("clubTypeId"))
+        if club_id is None or club_type_id is None:
+            continue
+        club_name = CLUB_TYPE_NAMES.get(club_type_id)
+        if club_name is not None:
+            lookup[club_id] = club_name
+    return lookup
 
 
 def _nested_get(data: Any, *keys: Any) -> Any:

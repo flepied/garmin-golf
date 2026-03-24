@@ -381,6 +381,78 @@ def build_practice_focus_stats(
     }
 
 
+def build_second_shot_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.DataFrame:
+    if (
+        holes.is_empty()
+        or shots.is_empty()
+        or "round_id" not in holes.columns
+        or "hole_number" not in holes.columns
+        or "par" not in holes.columns
+        or "round_id" not in shots.columns
+        or "hole_number" not in shots.columns
+        or "shot_number" not in shots.columns
+    ):
+        return pl.DataFrame()
+
+    hole_scoring = _holes_with_relative_score(holes)
+    joined = (
+        shots.filter(pl.col("shot_number").cast(pl.Int64, strict=False) == 2)
+        .join(
+            holes.select(["round_id", "hole_number", "par"]),
+            on=["round_id", "hole_number"],
+            how="inner",
+        )
+        .join(
+            hole_scoring.select(["round_id", "hole_number", "to_par"]),
+            on=["round_id", "hole_number"],
+            how="left",
+        )
+        .filter(pl.col("par").cast(pl.Int64, strict=False).is_in([4, 5]))
+        .with_columns(
+            [
+                pl.col("par").cast(pl.Int64, strict=False).alias("par"),
+                pl.col("club")
+                .cast(pl.String, strict=False)
+                .fill_null("Unknown")
+                .str.strip_chars()
+                .alias("club"),
+                pl.col("distance_meters").cast(pl.Float64, strict=False).alias("distance_meters"),
+            ]
+        )
+    )
+    if joined.is_empty():
+        return pl.DataFrame()
+
+    return (
+        joined.group_by(["par", "club"])
+        .agg(
+            [
+                pl.len().alias("second_shots"),
+                pl.col("round_id").n_unique().alias("rounds"),
+                pl.col("distance_meters").mean().alias("avg_distance_m"),
+                _pct_expr(pl.col("to_par") <= 0).alias("par_or_better_pct"),
+                _pct_expr(pl.col("to_par") >= 1).alias("bogey_or_worse_pct"),
+                _pct_expr(pl.col("to_par") >= 2).alias("double_or_worse_pct"),
+                pl.col("to_par").cast(pl.Float64, strict=False).mean().alias("avg_to_par"),
+            ]
+        )
+        .sort(
+            by=["par", "second_shots", "avg_to_par", "club"],
+            descending=[False, True, True, False],
+            nulls_last=True,
+        )
+        .with_columns(
+            [
+                pl.col("avg_distance_m").round(1),
+                pl.col("par_or_better_pct").round(2),
+                pl.col("bogey_or_worse_pct").round(2),
+                pl.col("double_or_worse_pct").round(2),
+                pl.col("avg_to_par").round(2),
+            ]
+        )
+    )
+
+
 def _mean(series: pl.Series) -> float:
     value = series.cast(pl.Float64, strict=False).drop_nulls().mean()
     return float(cast(int | float, value)) if value is not None else 0.0

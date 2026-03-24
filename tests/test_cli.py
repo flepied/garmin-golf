@@ -100,6 +100,99 @@ def test_stats_practice_focus_command(monkeypatch: MonkeyPatch, tmp_path: Path) 
     assert "estimated_strokes_to_save_per_18" in result.stdout
 
 
+def test_stats_second_shots_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [{"round_id": 1, "played_on": "2025-06-01", "total_score": 84, "total_par": 72}],
+        unique_by=["round_id"],
+    )
+    storage.upsert_rows(
+        "holes",
+        [
+            {"round_id": 1, "hole_number": 1, "par": 4, "strokes": 4},
+            {"round_id": 1, "hole_number": 2, "par": 5, "strokes": 6},
+        ],
+        unique_by=["round_id", "hole_number"],
+    )
+    storage.upsert_rows(
+        "shots",
+        [
+            {"round_id": 1, "hole_number": 1, "shot_number": 2, "club": "8 Iron", "distance_meters": 135.0},
+            {"round_id": 1, "hole_number": 2, "shot_number": 2, "club": "3 Wood", "distance_meters": 205.0},
+        ],
+        unique_by=["round_id", "hole_number", "shot_number"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "second-shots"])
+
+    assert result.exit_code == 0
+    assert "Second Shots" in result.stdout
+    assert "3 Wood" in result.stdout
+    assert "8 Iron" in result.stdout
+
+
+def test_stats_second_shots_command_uses_club_name_overrides(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    data_dir = tmp_path / "data"
+    config_file = tmp_path / "config.toml"
+    config_file.write_text('[club_name_overrides]\n"10400977" = "56 Wedge"\n', encoding="utf-8")
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("GARMIN_GOLF_CONFIG_FILE", str(config_file))
+
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [{"round_id": 1, "played_on": "2025-06-01", "total_score": 84, "total_par": 72}],
+        unique_by=["round_id"],
+    )
+    storage.upsert_rows(
+        "holes",
+        [{"round_id": 1, "hole_number": 1, "par": 4, "strokes": 4}],
+        unique_by=["round_id", "hole_number"],
+    )
+    storage.upsert_rows(
+        "shots",
+        [{"round_id": 1, "hole_number": 1, "shot_number": 2, "club_id": 10400977, "distance_meters": 70.0}],
+        unique_by=["round_id", "hole_number", "shot_number"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "second-shots"])
+
+    assert result.exit_code == 0
+    assert "56" in result.stdout
+    assert "Wedge" in result.stdout
+
+
+def test_stats_clubs_command_shows_default_and_configured_names(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    data_dir = tmp_path / "data"
+    config_file = tmp_path / "config.toml"
+    config_file.write_text('[club_name_overrides]\n"10400977" = "56 Wedge"\n', encoding="utf-8")
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("GARMIN_GOLF_CONFIG_FILE", str(config_file))
+
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "shots",
+        [{"round_id": 1, "hole_number": 1, "shot_number": 2, "club_id": 10400977, "club": "Lob Wedge"}],
+        unique_by=["round_id", "hole_number", "shot_number"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "clubs"], terminal_width=200)
+
+    assert result.exit_code == 0
+    assert "Clubs" in result.stdout
+    assert "Lob" in result.stdout
+    assert "56" in result.stdout
+
+
 def test_stats_summary_command_with_date_range(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
     storage = Storage(Settings())

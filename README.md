@@ -59,6 +59,11 @@ You can optionally store local settings in `~/.config/garmin-golf/config.toml`:
 
 ```toml
 data_dir = "/home/you/garmin-golf-data"
+
+[club_name_overrides]
+"10400964" = "4 Wood"
+"10400967" = "3 Rescue"
+"10400977" = "56 Wedge"
 ```
 
 Recommended permissions:
@@ -75,6 +80,11 @@ Optional overrides:
 - `GARMIN_GOLF_CONFIG_FILE` to point at a different TOML config file
 
 Precedence is: environment variables, then local `.env`, then `~/.config/garmin-golf/config.toml`.
+
+Club names are inferred from Garmin shot metadata and may not match a player's actual bag exactly.
+Use `uv run garmin-golf stats clubs` to inspect observed `club_id` values, inferred names, configured
+names, shot counts, and average distances, then add `club_name_overrides` entries for any ids that
+need bag-specific labels.
 
 ## Garmin golf data caveat
 

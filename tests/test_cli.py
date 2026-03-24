@@ -65,6 +65,41 @@ def test_stats_summary_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None
     assert "average_tee_shot_distance_m" in result.stdout
 
 
+def test_stats_practice_focus_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [{"round_id": 1, "played_on": "2025-06-01", "total_score": 84, "total_par": 72}],
+        unique_by=["round_id"],
+    )
+    storage.upsert_rows(
+        "holes",
+        [
+            {
+                "round_id": 1,
+                "hole_number": hole,
+                "par": 4,
+                "strokes": 5 if hole <= 6 else 4,
+                "putts": 3 if hole <= 2 else 2,
+                "gir": hole > 8,
+                "fairway_hit": hole > 6,
+                "penalties": 1 if hole == 1 else 0,
+            }
+            for hole in range(1, 19)
+        ],
+        unique_by=["round_id", "hole_number"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "practice-focus"])
+
+    assert result.exit_code == 0
+    assert "Practice Focus" in result.stdout
+    assert "priority_1" in result.stdout
+    assert "estimated_strokes_to_save_per_18" in result.stdout
+
+
 def test_stats_summary_command_with_date_range(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
     storage = Storage(Settings())

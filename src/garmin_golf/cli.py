@@ -12,6 +12,7 @@ from rich.table import Table
 from .browser_mirror import BrowserMirror, BrowserMirrorError, validate_scorecards_url
 from .config import default_config_template, get_config_file, get_settings
 from .stats import (
+    build_practice_focus_stats,
     build_course_focus_stats,
     build_course_hole_stats,
     build_round_stats,
@@ -162,6 +163,39 @@ def stats_summary(
         filtered_shots,
     )
     _render_mapping("Golf Summary", summary)
+
+
+@stats_app.command("practice-focus")
+def stats_practice_focus(
+    date_from: str | None = DATE_FROM_OPTION,
+    date_to: str | None = DATE_TO_OPTION,
+    period: str | None = PERIOD_OPTION,
+) -> None:
+    """Rank the biggest recurring score leaks to guide practice time."""
+
+    storage = _storage()
+    rounds = storage.read_table("rounds")
+    if rounds.is_empty():
+        _console().print("No local rounds found. Run `garmin-golf mirror scorecards ...` first.")
+        return
+
+    resolved_from, resolved_to = _resolve_date_window(
+        date_from=date_from,
+        date_to=date_to,
+        period=period,
+    )
+    holes = storage.read_table("holes")
+    shots = storage.read_table("shots")
+    filtered_rounds, filtered_holes, filtered_shots = _filter_stats_tables(
+        rounds,
+        holes,
+        shots,
+        date_from=resolved_from,
+        date_to=resolved_to,
+    )
+    canonical_rounds, _ = _canonicalize_rounds(filtered_rounds)
+    focus = build_practice_focus_stats(canonical_rounds, filtered_holes, filtered_shots)
+    _render_mapping("Practice Focus", focus)
 
 
 @stats_app.command("rounds")

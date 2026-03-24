@@ -1,6 +1,7 @@
 import polars as pl
 
 from garmin_golf.stats import (
+    build_practice_focus_stats,
     build_course_focus_stats,
     build_course_hole_stats,
     build_round_stats,
@@ -290,3 +291,44 @@ def test_build_course_focus_stats() -> None:
     assert focus["penalty_holes"].startswith("4 (0.80 penalties)")
     assert focus["three_putt_holes"].startswith("7 (20.00% 3-putts)")
     assert focus["gir_trouble_holes"].startswith("4 (30.00% GIR)")
+
+
+def test_build_practice_focus_stats() -> None:
+    rounds = pl.DataFrame(
+        [
+            {"round_id": 1, "total_score": 84, "total_par": 72},
+            {"round_id": 2, "total_score": 88, "total_par": 72},
+        ]
+    )
+    holes = pl.DataFrame(
+        [
+            {
+                "round_id": round_id,
+                "hole_number": hole,
+                "par": 4,
+                "strokes": 5 if hole <= 12 else 4,
+                "putts": 3 if hole <= 3 else 2,
+                "gir": hole > 10,
+                "fairway_hit": hole > 8,
+                "penalties": 1 if hole <= 2 else 0,
+            }
+            for round_id in (1, 2)
+            for hole in range(1, 19)
+        ]
+    )
+    shots = pl.DataFrame(
+        [
+            {"round_id": 1, "shot_type": "TEE", "club": "Driver", "distance_meters": 205.0},
+            {"round_id": 2, "shot_type": "TEE", "club": "Driver", "distance_meters": 210.0},
+        ]
+    )
+
+    focus = build_practice_focus_stats(rounds, holes, shots)
+
+    assert focus["rounds_played"] == 2
+    combined = " ".join(str(focus[key]) for key in ("priority_1", "priority_2", "priority_3"))
+    assert "Scrambling:" in combined
+    assert "Penalty control:" in combined
+    assert "Lag putting:" in combined
+    assert str(focus["priority_3"]) != ""
+    assert float(focus["estimated_strokes_to_save_per_18"]) > 0.0

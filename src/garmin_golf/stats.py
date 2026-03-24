@@ -297,6 +297,90 @@ def build_course_focus_stats(hole_stats: pl.DataFrame) -> dict[str, str]:
     }
 
 
+def build_practice_focus_stats(
+    rounds: pl.DataFrame,
+    holes: pl.DataFrame,
+    shots: pl.DataFrame | None = None,
+) -> dict[str, str | float | int]:
+    shots = shots if shots is not None else pl.DataFrame()
+    if rounds.is_empty() or holes.is_empty():
+        return {
+            "rounds_played": 0,
+            "priority_1": "",
+            "priority_2": "",
+            "priority_3": "",
+            "estimated_strokes_to_save_per_18": 0.0,
+        }
+
+    summary = build_summary_stats(rounds, holes, shots)
+    gir_opportunities_per_18 = _nonnull_count_per_18(holes, "gir")
+    fairway_opportunities_per_18 = _nonnull_count_per_18(holes, "fairway_hit")
+
+    penalties_per_18 = float(summary["penalties_per_18"])
+    three_putts_per_18 = float(summary["three_putts_per_18"])
+    scrambles_per_18 = float(summary["scrambles_per_18"])
+    gir_per_18 = float(summary["gir_per_18"])
+    fir_per_18 = float(summary["fir_per_18"])
+
+    missed_gir_per_18 = max(0.0, gir_opportunities_per_18 - gir_per_18)
+    failed_scrambles_per_18 = max(0.0, missed_gir_per_18 - scrambles_per_18)
+    missed_fairways_per_18 = max(0.0, fairway_opportunities_per_18 - fir_per_18)
+
+    candidates = [
+        (
+            penalties_per_18,
+            (
+                "Penalty control",
+                f"{penalties_per_18:.2f} penalties per 18; focus on tee-shot and recovery discipline.",
+            ),
+        ),
+        (
+            three_putts_per_18,
+            (
+                "Lag putting",
+                f"{three_putts_per_18:.2f} three-putts per 18; prioritize pace control from long range.",
+            ),
+        ),
+        (
+            failed_scrambles_per_18 * 0.5,
+            (
+                "Scrambling",
+                f"{failed_scrambles_per_18:.2f} failed saves per 18 after missed GIR; practice chips and first putts inside scoring range.",
+            ),
+        ),
+        (
+            missed_gir_per_18 * 0.15,
+            (
+                "Approach play",
+                f"{missed_gir_per_18:.2f} missed greens per 18; tighten start lines and distance control into greens.",
+            ),
+        ),
+        (
+            missed_fairways_per_18 * 0.1,
+            (
+                "Driving accuracy",
+                f"{missed_fairways_per_18:.2f} missed fairways per 18; favor stock tee-shot shapes and conservative targets.",
+            ),
+        ),
+    ]
+
+    ranked = [item for item in candidates if item[0] > 0.0]
+    ranked.sort(key=lambda item: (-item[0], item[1][0]))
+    priorities = [f"{label}: {detail}" for _, (label, detail) in ranked[:3]]
+
+    while len(priorities) < 3:
+        priorities.append("")
+
+    estimated_strokes = sum(score for score, _ in ranked[:3])
+    return {
+        "rounds_played": rounds.height,
+        "priority_1": priorities[0],
+        "priority_2": priorities[1],
+        "priority_3": priorities[2],
+        "estimated_strokes_to_save_per_18": round(estimated_strokes, 2),
+    }
+
+
 def _mean(series: pl.Series) -> float:
     value = series.cast(pl.Float64, strict=False).drop_nulls().mean()
     return float(cast(int | float, value)) if value is not None else 0.0
@@ -337,6 +421,14 @@ def _ratio_mean(series: pl.Series) -> float:
     numeric = series.cast(pl.Float64, strict=False).drop_nulls()
     value = numeric.mean()
     return float(cast(int | float, value)) if value is not None else 0.0
+
+
+def _nonnull_count_per_18(frame: pl.DataFrame, column: str) -> float:
+    if frame.is_empty() or "round_id" not in frame.columns or column not in frame.columns:
+        return 0.0
+    valid = frame.drop_nulls([column]).group_by("round_id").agg(pl.len().alias("count"))
+    hole_counts = _round_hole_counts(frame)
+    return _per_round_metric_18_equivalent(valid, hole_counts, "count")
 
 
 def _boolean_successes_per_18(frame: pl.DataFrame, column: str) -> float:

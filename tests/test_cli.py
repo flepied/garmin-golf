@@ -240,6 +240,102 @@ def test_stats_trends_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     assert "Last 5" in result.stdout
 
 
+def test_stats_trends_command_metric_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [
+            {
+                "round_id": 1,
+                "played_on": "2025-06-01",
+                "course_name": "Blue Hills",
+                "total_score": 90,
+                "total_par": 72,
+            },
+            {
+                "round_id": 2,
+                "played_on": "2025-06-08",
+                "course_name": "Blue Hills",
+                "total_score": 81,
+                "total_par": 72,
+            },
+            {
+                "round_id": 3,
+                "played_on": "2025-06-15",
+                "course_name": "Red Oaks",
+                "total_score": 72,
+                "total_par": 72,
+            },
+        ],
+        unique_by=["round_id"],
+    )
+    storage.upsert_rows(
+        "holes",
+        [
+            {
+                "round_id": round_id,
+                "hole_number": hole,
+                "par": 4,
+                "strokes": 5 if round_id == 1 else 4 if round_id == 3 or hole <= 9 else 5,
+                "putts": 2,
+                "gir": round_id == 3 or (round_id == 2 and hole <= 9),
+                "fairway_hit": round_id == 3 or (round_id == 2 and hole <= 9),
+                "penalties": (
+                    1
+                    if (round_id == 1 and hole <= 2) or (round_id == 2 and hole == 1)
+                    else 0
+                ),
+            }
+            for round_id in (1, 2, 3)
+            for hole in range(1, 19)
+        ],
+        unique_by=["round_id", "hole_number"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["stats", "trends", "--metric", "gir_pct", "--window", "5", "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert len(payload) == 3
+    assert payload[0]["metric"] == "gir_pct"
+    assert payload[0]["round_value"] == 100.0
+    assert payload[0]["window_value"] == 50.0
+    assert payload[0]["delta_value"] is None
+    assert set(payload[0]) == {
+        "played_on",
+        "round_id",
+        "course_name",
+        "window",
+        "metric",
+        "round_value",
+        "window_value",
+        "delta_value",
+    }
+
+
+def test_stats_trends_command_rejects_unknown_metric(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [{"round_id": 1, "played_on": "2025-06-01", "total_score": 90, "total_par": 72}],
+        unique_by=["round_id"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "trends", "--metric", "bad_metric"])
+
+    assert result.exit_code != 0
+    assert "Unsupported trend metric: bad_metric." in result.output
+
+
 def test_stats_second_shots_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
     storage = Storage(Settings())

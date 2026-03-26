@@ -13,9 +13,11 @@ from rich.table import Table
 from .browser_mirror import BrowserMirror, BrowserMirrorError, validate_scorecards_url
 from .config import default_config_template, get_config_file, get_settings
 from .stats import (
+    TREND_METRIC_COLUMNS,
     build_club_context_stats,
     build_course_focus_stats,
     build_course_hole_stats,
+    build_metric_trend_series,
     build_practice_focus_stats,
     build_round_stats,
     build_round_trends,
@@ -118,6 +120,14 @@ TREND_WINDOW_OPTION = typer.Option(
     5,
     "--window",
     help="Rolling round window size: 5, 10, or 20.",
+)
+TREND_METRIC_OPTION = typer.Option(
+    None,
+    "--metric",
+    help=(
+        "Single trend metric: average_to_par, gir_pct, fir_pct, scrambling_pct, "
+        "three_putts_per_18, or penalties_per_18."
+    ),
 )
 COURSE_REQUIRED_OPTION = typer.Option(..., "--course", help="Exact course name to analyze.")
 JSON_OPTION = typer.Option(False, "--json", help="Emit structured JSON to stdout.")
@@ -301,12 +311,18 @@ def stats_trends(
     date_to: str | None = DATE_TO_OPTION,
     period: str | None = PERIOD_OPTION,
     window: int = TREND_WINDOW_OPTION,
+    metric: str | None = TREND_METRIC_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Show rolling trend metrics for each round."""
 
     if window not in {5, 10, 20}:
         raise typer.BadParameter("--window must be one of: 5, 10, 20.")
+    if metric is not None and metric not in TREND_METRIC_COLUMNS:
+        supported = ", ".join(sorted(TREND_METRIC_COLUMNS))
+        raise typer.BadParameter(
+            f"Unsupported trend metric: {metric}. Use one of: {supported}."
+        )
 
     storage = _storage()
     canonical_rounds = _load_canonical_rounds(
@@ -334,8 +350,19 @@ def stats_trends(
             return
         _console().print("No round trends are available for this selection yet.")
         return
+    if metric is not None:
+        trends = build_metric_trend_series(trends, metric)
+        if trends.is_empty():
+            if json_output:
+                _emit_json([])
+                return
+            _console().print("No single-metric trend data is available for this selection yet.")
+            return
     if json_output:
         _emit_json(trends)
+        return
+    if metric is not None:
+        _render_metric_trends_table(trends, metric=metric, window=window)
         return
     _render_trends_table(trends, window=window)
 
@@ -720,6 +747,24 @@ def _render_trends_table(trends: pl.DataFrame, *, window: int) -> None:
         "delta_fir_pct",
         "window_penalties_per_18",
         "delta_penalties_per_18",
+    ]
+    for column in columns:
+        justify = "left" if column in {"played_on", "course_name"} else "right"
+        table.add_column(column, justify=justify)
+
+    for row in trends.iter_rows(named=True):
+        table.add_row(*[_display_value(row.get(column)) for column in columns])
+    _console().print(table)
+
+
+def _render_metric_trends_table(trends: pl.DataFrame, *, metric: str, window: int) -> None:
+    table = Table(title=f"Trend: {metric} (Last {window})")
+    columns = [
+        "played_on",
+        "course_name",
+        "round_value",
+        "window_value",
+        "delta_value",
     ]
     for column in columns:
         justify = "left" if column in {"played_on", "course_name"} else "right"

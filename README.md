@@ -59,10 +59,14 @@ To inspect rolling trends over your recent rounds:
 ```bash
 uv run garmin-golf stats trends --window 5
 uv run garmin-golf stats trends --window 10 --period last-12-months
+uv run garmin-golf stats trends --metric gir_pct --window 5 --json
 ```
 
 The trends view shows each round alongside rolling averages and deltas for score to par, GIR, FIR,
 scrambling, three-putt rate, and penalties over the selected trailing round window.
+Use `--metric` to emit one graph-friendly series for a single aspect. Supported metrics are
+`average_to_par`, `gir_pct`, `fir_pct`, `scrambling_pct`, `three_putts_per_18`, and
+`penalties_per_18`.
 
 To inspect club usage by golf context instead of only raw inventory:
 
@@ -80,6 +84,7 @@ For agent or script consumption, most commands also support `--json`:
 uv run garmin-golf stats summary --json
 uv run garmin-golf stats round --round-id 22068626916 --json
 uv run garmin-golf stats trends --window 5 --json
+uv run garmin-golf stats trends --metric gir_pct --window 5 --json
 uv run garmin-golf stats clubs --json
 ```
 

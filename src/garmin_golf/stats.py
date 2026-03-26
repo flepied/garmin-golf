@@ -8,6 +8,26 @@ import polars as pl
 SUPPORTED_EQUIVALENT_HOLE_COUNTS = (9, 18)
 DISTANCE_OUTLIER_STDDEV_THRESHOLD = 2.0
 DISTANCE_OUTLIER_MIN_GROUP_SIZE = 5
+TREND_METRIC_COLUMNS: dict[str, tuple[str, str, str]] = {
+    "average_to_par": ("round_to_par", "window_average_to_par", "delta_average_to_par"),
+    "gir_pct": ("round_gir_pct", "window_gir_pct", "delta_gir_pct"),
+    "fir_pct": ("round_fir_pct", "window_fir_pct", "delta_fir_pct"),
+    "scrambling_pct": (
+        "round_scrambling_pct",
+        "window_scrambling_pct",
+        "delta_scrambling_pct",
+    ),
+    "three_putts_per_18": (
+        "round_three_putts_per_18",
+        "window_three_putts_per_18",
+        "delta_three_putts_per_18",
+    ),
+    "penalties_per_18": (
+        "round_penalties_per_18",
+        "window_penalties_per_18",
+        "delta_penalties_per_18",
+    ),
+}
 
 
 def build_summary_stats(
@@ -662,6 +682,42 @@ def build_club_context_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.Dat
                 pl.col("avg_to_par").round(2),
             ]
         )
+    )
+
+
+def build_metric_trend_series(trends: pl.DataFrame, metric: str) -> pl.DataFrame:
+    metric_columns = TREND_METRIC_COLUMNS.get(metric)
+    if metric_columns is None:
+        supported = ", ".join(sorted(TREND_METRIC_COLUMNS))
+        msg = f"Unsupported trend metric: {metric}. Use one of: {supported}."
+        raise ValueError(msg)
+    if trends.is_empty():
+        return pl.DataFrame()
+
+    round_column, window_column, delta_column = metric_columns
+    required_columns = {
+        "played_on",
+        "round_id",
+        "course_name",
+        "window",
+        round_column,
+        window_column,
+        delta_column,
+    }
+    if not required_columns.issubset(set(trends.columns)):
+        return pl.DataFrame()
+
+    return trends.select(
+        [
+            "played_on",
+            "round_id",
+            "course_name",
+            "window",
+            pl.lit(metric).alias("metric"),
+            pl.col(round_column).alias("round_value"),
+            pl.col(window_column).alias("window_value"),
+            pl.col(delta_column).alias("delta_value"),
+        ]
     )
 
 

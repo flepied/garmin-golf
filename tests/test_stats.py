@@ -1,9 +1,11 @@
 import polars as pl
+import pytest
 
 from garmin_golf.stats import (
     build_club_context_stats,
     build_course_focus_stats,
     build_course_hole_stats,
+    build_metric_trend_series,
     build_practice_focus_stats,
     build_round_stats,
     build_round_trends,
@@ -490,6 +492,59 @@ def test_build_round_trends() -> None:
     assert earliest["rounds_in_window"] == 1
     assert earliest["rounds_in_previous_window"] == 0
     assert earliest["delta_average_to_par"] is None
+
+
+def test_build_metric_trend_series() -> None:
+    trends = pl.DataFrame(
+        [
+            {
+                "played_on": "2025-06-15",
+                "round_id": 3,
+                "course_name": "Red Oaks",
+                "window": 5,
+                "round_gir_pct": 100.0,
+                "window_gir_pct": 75.0,
+                "delta_gir_pct": 75.0,
+            },
+            {
+                "played_on": "2025-06-08",
+                "round_id": 2,
+                "course_name": "Blue Hills",
+                "window": 5,
+                "round_gir_pct": 50.0,
+                "window_gir_pct": 50.0,
+                "delta_gir_pct": None,
+            },
+        ]
+    )
+
+    series = build_metric_trend_series(trends, "gir_pct")
+
+    assert series.height == 2
+    first_row = series.row(0, named=True)
+    assert first_row["metric"] == "gir_pct"
+    assert first_row["round_value"] == 100.0
+    assert first_row["window_value"] == 75.0
+    assert first_row["delta_value"] == 75.0
+
+    second_row = series.row(1, named=True)
+    assert second_row["delta_value"] is None
+
+
+def test_build_metric_trend_series_rejects_unknown_metric() -> None:
+    trends = pl.DataFrame(
+        [
+            {
+                "played_on": "2025-06-15",
+                "round_id": 3,
+                "course_name": "Red Oaks",
+                "window": 5,
+            }
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Unsupported trend metric: bad_metric"):
+        build_metric_trend_series(trends, "bad_metric")
 
 
 def test_build_club_context_stats() -> None:

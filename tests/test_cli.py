@@ -125,6 +125,121 @@ def test_stats_practice_focus_command(monkeypatch: MonkeyPatch, tmp_path: Path) 
     assert "estimated_strokes_to_save_per_18" in result.stdout
 
 
+def test_stats_trends_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [
+            {
+                "round_id": 1,
+                "played_on": "2025-06-01",
+                "course_name": "Blue Hills",
+                "total_score": 90,
+                "total_par": 72,
+            },
+            {
+                "round_id": 2,
+                "played_on": "2025-06-08",
+                "course_name": "Blue Hills",
+                "total_score": 81,
+                "total_par": 72,
+            },
+            {
+                "round_id": 3,
+                "played_on": "2025-06-15",
+                "course_name": "Red Oaks",
+                "total_score": 72,
+                "total_par": 72,
+            },
+        ],
+        unique_by=["round_id"],
+    )
+    storage.upsert_rows(
+        "holes",
+        [
+            {
+                "round_id": round_id,
+                "hole_number": hole,
+                "par": 4,
+                "strokes": 5 if round_id == 1 else 4 if round_id == 3 or hole <= 9 else 5,
+                "putts": 2,
+                "gir": round_id == 3 or (round_id == 2 and hole <= 9),
+                "fairway_hit": round_id == 3 or (round_id == 2 and hole <= 9),
+                "penalties": (
+                    1
+                    if (round_id == 1 and hole <= 2) or (round_id == 2 and hole == 1)
+                    else 0
+                ),
+            }
+            for round_id in (1, 2, 3)
+            for hole in range(1, 19)
+        ],
+        unique_by=["round_id", "hole_number"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "trends", "--window", "5", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert len(payload) == 3
+    assert payload[0]["round_id"] == 3
+    assert payload[0]["course_name"] == "Red Oaks"
+    assert payload[0]["window_average_to_par"] == 9.0
+    assert payload[0]["delta_average_to_par"] is None
+
+
+def test_stats_trends_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [
+            {
+                "round_id": 1,
+                "played_on": "2025-06-01",
+                "course_name": "Blue Hills",
+                "total_score": 90,
+                "total_par": 72,
+            },
+            {
+                "round_id": 2,
+                "played_on": "2025-06-08",
+                "course_name": "Blue Hills",
+                "total_score": 81,
+                "total_par": 72,
+            },
+        ],
+        unique_by=["round_id"],
+    )
+    storage.upsert_rows(
+        "holes",
+        [
+            {
+                "round_id": round_id,
+                "hole_number": hole,
+                "par": 4,
+                "strokes": 5 if round_id == 1 else 4 if hole <= 9 else 5,
+                "putts": 2,
+                "gir": round_id == 2 and hole <= 9,
+                "fairway_hit": round_id == 2 and hole <= 9,
+                "penalties": 1 if round_id == 1 and hole <= 2 else 0,
+            }
+            for round_id in (1, 2)
+            for hole in range(1, 19)
+        ],
+        unique_by=["round_id", "hole_number"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "trends", "--window", "5"], terminal_width=200)
+
+    assert result.exit_code == 0
+    assert "Round Trends" in result.stdout
+    assert "Last 5" in result.stdout
+
+
 def test_stats_second_shots_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
     storage = Storage(Settings())
@@ -144,8 +259,20 @@ def test_stats_second_shots_command(monkeypatch: MonkeyPatch, tmp_path: Path) ->
     storage.upsert_rows(
         "shots",
         [
-            {"round_id": 1, "hole_number": 1, "shot_number": 2, "club": "8 Iron", "distance_meters": 135.0},
-            {"round_id": 1, "hole_number": 2, "shot_number": 2, "club": "3 Wood", "distance_meters": 205.0},
+            {
+                "round_id": 1,
+                "hole_number": 1,
+                "shot_number": 2,
+                "club": "8 Iron",
+                "distance_meters": 135.0,
+            },
+            {
+                "round_id": 1,
+                "hole_number": 2,
+                "shot_number": 2,
+                "club": "3 Wood",
+                "distance_meters": 205.0,
+            },
         ],
         unique_by=["round_id", "hole_number", "shot_number"],
     )
@@ -174,7 +301,15 @@ def test_stats_second_shots_command_json(monkeypatch: MonkeyPatch, tmp_path: Pat
     )
     storage.upsert_rows(
         "shots",
-        [{"round_id": 1, "hole_number": 1, "shot_number": 2, "club": "8 Iron", "distance_meters": 135.0}],
+        [
+            {
+                "round_id": 1,
+                "hole_number": 1,
+                "shot_number": 2,
+                "club": "8 Iron",
+                "distance_meters": 135.0,
+            }
+        ],
         unique_by=["round_id", "hole_number", "shot_number"],
     )
 
@@ -209,7 +344,15 @@ def test_stats_second_shots_command_uses_club_name_overrides(
     )
     storage.upsert_rows(
         "shots",
-        [{"round_id": 1, "hole_number": 1, "shot_number": 2, "club_id": 10400977, "distance_meters": 70.0}],
+        [
+            {
+                "round_id": 1,
+                "hole_number": 1,
+                "shot_number": 2,
+                "club_id": 10400977,
+                "distance_meters": 70.0,
+            }
+        ],
         unique_by=["round_id", "hole_number", "shot_number"],
     )
 
@@ -233,7 +376,15 @@ def test_stats_clubs_command_shows_default_and_configured_names(
     storage = Storage(Settings())
     storage.upsert_rows(
         "shots",
-        [{"round_id": 1, "hole_number": 1, "shot_number": 2, "club_id": 10400977, "club": "Lob Wedge"}],
+        [
+            {
+                "round_id": 1,
+                "hole_number": 1,
+                "shot_number": 2,
+                "club_id": 10400977,
+                "club": "Lob Wedge",
+            }
+        ],
         unique_by=["round_id", "hole_number", "shot_number"],
     )
 
@@ -298,7 +449,15 @@ def test_stats_clubs_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> N
     storage = Storage(Settings())
     storage.upsert_rows(
         "shots",
-        [{"round_id": 1, "hole_number": 1, "shot_number": 2, "club_id": 10400977, "club": "Lob Wedge"}],
+        [
+            {
+                "round_id": 1,
+                "hole_number": 1,
+                "shot_number": 2,
+                "club_id": 10400977,
+                "club": "Lob Wedge",
+            }
+        ],
         unique_by=["round_id", "hole_number", "shot_number"],
     )
 
@@ -309,6 +468,56 @@ def test_stats_clubs_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> N
     payload = json.loads(result.stdout)
     assert isinstance(payload, list)
     assert payload[0]["default_name"] == "Lob Wedge"
+
+
+def test_stats_clubs_command_by_context_json(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "holes",
+        [
+            {"round_id": 1, "hole_number": 1, "par": 4, "strokes": 4},
+            {"round_id": 1, "hole_number": 2, "par": 3, "strokes": 3},
+        ],
+        unique_by=["round_id", "hole_number"],
+    )
+    storage.upsert_rows(
+        "shots",
+        [
+            {
+                "round_id": 1,
+                "hole_number": 1,
+                "shot_number": 1,
+                "club_id": 10400961,
+                "club": "Driver",
+                "shot_type": "TEE",
+                "lie": "TEE_BOX",
+                "distance_meters": 220.0,
+            },
+            {
+                "round_id": 1,
+                "hole_number": 2,
+                "shot_number": 1,
+                "club_id": 10400965,
+                "club": "7 Iron",
+                "shot_type": "APPROACH",
+                "lie": "TEE_BOX",
+                "distance_meters": 155.0,
+            },
+        ],
+        unique_by=["round_id", "hole_number", "shot_number"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "clubs", "--by-context", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert isinstance(payload, list)
+    assert payload[0]["context"] in {"tee_par_3", "tee_par_4"}
+    assert {row["context"] for row in payload} == {"tee_par_3", "tee_par_4"}
 
 
 def test_stats_summary_command_with_date_range(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
@@ -389,7 +598,13 @@ def test_stats_rounds_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> 
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload == [{"round_id": 1, "played_on": "2025-06-01", "display_course_name": "Blue Hills"}]
+    assert payload == [
+        {
+            "round_id": 1,
+            "played_on": "2025-06-01",
+            "display_course_name": "Blue Hills",
+        }
+    ]
 
 
 def test_stats_rounds_command_uses_location_name_fallback(
@@ -713,12 +928,31 @@ def test_stats_course_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> 
     storage = Storage(Settings())
     storage.upsert_rows(
         "rounds",
-        [{"round_id": 1, "played_on": "2025-06-01", "course_name": "Blue Hills", "total_score": 82, "total_par": 72}],
+        [
+            {
+                "round_id": 1,
+                "played_on": "2025-06-01",
+                "course_name": "Blue Hills",
+                "total_score": 82,
+                "total_par": 72,
+            }
+        ],
         unique_by=["round_id"],
     )
     storage.upsert_rows(
         "holes",
-        [{"round_id": 1, "hole_number": 1, "par": 4, "strokes": 5, "putts": 2, "gir": False, "fairway_hit": False, "penalties": 1}],
+        [
+            {
+                "round_id": 1,
+                "hole_number": 1,
+                "par": 4,
+                "strokes": 5,
+                "putts": 2,
+                "gir": False,
+                "fairway_hit": False,
+                "penalties": 1,
+            }
+        ],
         unique_by=["round_id", "hole_number"],
     )
 
@@ -844,19 +1078,52 @@ def test_stats_round_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> N
     storage = Storage(Settings())
     storage.upsert_rows(
         "rounds",
-        [{"round_id": 1001, "played_on": "2025-06-01", "course_name": "Golf National", "total_score": 82, "total_par": 72}],
+        [
+            {
+                "round_id": 1001,
+                "played_on": "2025-06-01",
+                "course_name": "Golf National",
+                "total_score": 82,
+                "total_par": 72,
+            }
+        ],
         unique_by=["round_id"],
     )
     storage.upsert_rows(
         "holes",
-        [{"round_id": 1001, "hole_number": 1, "par": 4, "strokes": 5, "putts": 2, "gir": False, "fairway_hit": True, "penalties": 1}],
+        [
+            {
+                "round_id": 1001,
+                "hole_number": 1,
+                "par": 4,
+                "strokes": 5,
+                "putts": 2,
+                "gir": False,
+                "fairway_hit": True,
+                "penalties": 1,
+            }
+        ],
         unique_by=["round_id", "hole_number"],
     )
     storage.upsert_rows(
         "shots",
         [
-            {"round_id": 1001, "hole_number": 1, "shot_number": 1, "shot_type": "TEE", "club": "Driver", "distance_meters": 200.0},
-            {"round_id": 1001, "hole_number": 1, "shot_number": 2, "shot_type": "APPROACH", "club": "8 Iron", "distance_meters": 135.0},
+            {
+                "round_id": 1001,
+                "hole_number": 1,
+                "shot_number": 1,
+                "shot_type": "TEE",
+                "club": "Driver",
+                "distance_meters": 200.0,
+            },
+            {
+                "round_id": 1001,
+                "hole_number": 1,
+                "shot_number": 2,
+                "shot_type": "APPROACH",
+                "club": "8 Iron",
+                "distance_meters": 135.0,
+            },
         ],
         unique_by=["round_id", "hole_number", "shot_number"],
     )

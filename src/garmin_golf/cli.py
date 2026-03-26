@@ -13,10 +13,12 @@ from rich.table import Table
 from .browser_mirror import BrowserMirror, BrowserMirrorError, validate_scorecards_url
 from .config import default_config_template, get_config_file, get_settings
 from .stats import (
-    build_practice_focus_stats,
+    build_club_context_stats,
     build_course_focus_stats,
     build_course_hole_stats,
+    build_practice_focus_stats,
     build_round_stats,
+    build_round_trends,
     build_second_shot_stats,
     build_summary_stats,
     trim_distance_outliers,
@@ -112,8 +114,18 @@ PERIOD_OPTION = typer.Option(
     "--period",
     help="Shortcut period: last-12-months, this-year, or last-year.",
 )
+TREND_WINDOW_OPTION = typer.Option(
+    5,
+    "--window",
+    help="Rolling round window size: 5, 10, or 20.",
+)
 COURSE_REQUIRED_OPTION = typer.Option(..., "--course", help="Exact course name to analyze.")
 JSON_OPTION = typer.Option(False, "--json", help="Emit structured JSON to stdout.")
+BY_CONTEXT_OPTION = typer.Option(
+    False,
+    "--by-context",
+    help="Group club performance by golf context such as tee shots and approaches.",
+)
 ROUND_MATCH_TOLERANCE = timedelta(hours=2)
 
 
@@ -283,6 +295,51 @@ def stats_practice_focus(
     _render_mapping("Practice Focus", focus)
 
 
+@stats_app.command("trends")
+def stats_trends(
+    date_from: str | None = DATE_FROM_OPTION,
+    date_to: str | None = DATE_TO_OPTION,
+    period: str | None = PERIOD_OPTION,
+    window: int = TREND_WINDOW_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Show rolling trend metrics for each round."""
+
+    if window not in {5, 10, 20}:
+        raise typer.BadParameter("--window must be one of: 5, 10, 20.")
+
+    storage = _storage()
+    canonical_rounds = _load_canonical_rounds(
+        date_from=date_from,
+        date_to=date_to,
+        period=period,
+    )
+    if canonical_rounds.is_empty():
+        if json_output:
+            _emit_json([])
+            return
+        _console().print("No local rounds found for the selected date window.")
+        return
+
+    round_ids = canonical_rounds["round_id"].drop_nulls().to_list()
+    holes = _filter_round_table(storage.read_table("holes"), round_ids)
+    shots = _filter_round_table(
+        _shots_with_configured_club_names(storage.read_table("shots")),
+        round_ids,
+    )
+    trends = build_round_trends(canonical_rounds, holes, shots, window=window)
+    if trends.is_empty():
+        if json_output:
+            _emit_json([])
+            return
+        _console().print("No round trends are available for this selection yet.")
+        return
+    if json_output:
+        _emit_json(trends)
+        return
+    _render_trends_table(trends, window=window)
+
+
 @stats_app.command("second-shots")
 def stats_second_shots(
     date_from: str | None = DATE_FROM_OPTION,
@@ -329,7 +386,7 @@ def stats_second_shots(
 
 
 @stats_app.command("clubs")
-def stats_clubs(json_output: bool = JSON_OPTION) -> None:
+def stats_clubs(by_context: bool = BY_CONTEXT_OPTION, json_output: bool = JSON_OPTION) -> None:
     """List observed club ids with inferred and configured names."""
 
     raw_shots = _shots_with_normalized_shot_types(_storage().read_table("shots"))
@@ -337,10 +394,28 @@ def stats_clubs(json_output: bool = JSON_OPTION) -> None:
         if json_output:
             _emit_json([])
             return
-        _console().print("No club data is available yet. Run `garmin-golf mirror scorecards ...` first.")
+        _console().print(
+            "No club data is available yet. "
+            "Run `garmin-golf mirror scorecards ...` first."
+        )
         return
 
     resolved_shots = _shots_with_configured_club_names(raw_shots)
+    if by_context:
+        holes = _storage().read_table("holes")
+        context_stats = build_club_context_stats(holes, resolved_shots)
+        if context_stats.is_empty():
+            if json_output:
+                _emit_json([])
+                return
+            _console().print("No context-aware club data is available for this selection yet.")
+            return
+        if json_output:
+            _emit_json(context_stats)
+            return
+        _render_club_context_table(context_stats)
+        return
+
     club_inventory = _build_club_inventory_table(raw_shots, resolved_shots)
     if club_inventory.is_empty():
         if json_output:
@@ -631,6 +706,30 @@ def _render_second_shots_table(second_shots: pl.DataFrame, *, title: str = "Seco
     _console().print(table)
 
 
+def _render_trends_table(trends: pl.DataFrame, *, window: int) -> None:
+    table = Table(title=f"Round Trends (Last {window})")
+    columns = [
+        "played_on",
+        "course_name",
+        "round_to_par",
+        "window_average_to_par",
+        "delta_average_to_par",
+        "window_gir_pct",
+        "delta_gir_pct",
+        "window_fir_pct",
+        "delta_fir_pct",
+        "window_penalties_per_18",
+        "delta_penalties_per_18",
+    ]
+    for column in columns:
+        justify = "left" if column in {"played_on", "course_name"} else "right"
+        table.add_column(column, justify=justify)
+
+    for row in trends.iter_rows(named=True):
+        table.add_row(*[_display_value(row.get(column)) for column in columns])
+    _console().print(table)
+
+
 def _render_round_holes_table(title: str, holes: pl.DataFrame) -> None:
     table = Table(title=f"{title}: Holes")
     columns = [
@@ -655,7 +754,8 @@ def _render_round_clubs_table(title: str, clubs: pl.DataFrame) -> None:
     table = Table(title=f"{title}: Clubs")
     columns = ["club", "shots", "avg_distance_m", "shot_type_breakdown"]
     for column in columns:
-        table.add_column(column, justify="right" if column in {"shots", "avg_distance_m"} else "left")
+        justify = "right" if column in {"shots", "avg_distance_m"} else "left"
+        table.add_column(column, justify=justify)
 
     for row in clubs.iter_rows(named=True):
         table.add_row(*[_display_value(row.get(column)) for column in columns])
@@ -677,9 +777,14 @@ def _render_club_inventory_table(club_inventory: pl.DataFrame) -> None:
         "chip_avg_m",
     ]
     for column in columns:
+        justify = (
+            "right"
+            if column in {"club_id", "shots"} or column.endswith("_avg_m")
+            else "left"
+        )
         table.add_column(
             column,
-            justify="right" if column in {"club_id", "shots"} or column.endswith("_avg_m") else "left",
+            justify=justify,
         )
 
     for row in club_inventory.iter_rows(named=True):
@@ -687,7 +792,32 @@ def _render_club_inventory_table(club_inventory: pl.DataFrame) -> None:
     _console().print(table)
 
 
-def _build_club_inventory_table(raw_shots: pl.DataFrame, resolved_shots: pl.DataFrame) -> pl.DataFrame:
+def _render_club_context_table(context_stats: pl.DataFrame) -> None:
+    table = Table(title="Club Context")
+    columns = [
+        "club",
+        "context",
+        "shots",
+        "rounds",
+        "shot_type",
+        "lie",
+        "avg_distance_m",
+        "par_or_better_pct",
+        "bogey_or_worse_pct",
+        "avg_to_par",
+    ]
+    for column in columns:
+        justify = "right" if column in {"shots", "rounds", "avg_distance_m"} else "left"
+        table.add_column(column, justify=justify)
+
+    for row in context_stats.iter_rows(named=True):
+        table.add_row(*[_display_value(row.get(column)) for column in columns])
+    _console().print(table)
+
+
+def _build_club_inventory_table(
+    raw_shots: pl.DataFrame, resolved_shots: pl.DataFrame
+) -> pl.DataFrame:
     if raw_shots.is_empty() or "club_id" not in raw_shots.columns:
         return pl.DataFrame()
 
@@ -832,9 +962,10 @@ def _build_round_holes_table(holes: pl.DataFrame) -> pl.DataFrame:
     )
     if "par" in holes.columns and "strokes" in holes.columns:
         frame = frame.with_columns(
-            (pl.col("strokes").cast(pl.Int64, strict=False) - pl.col("par").cast(pl.Int64, strict=False)).alias(
-                "to_par"
-            )
+            (
+                pl.col("strokes").cast(pl.Int64, strict=False)
+                - pl.col("par").cast(pl.Int64, strict=False)
+            ).alias("to_par")
         )
     else:
         frame = frame.with_columns(pl.lit(None, dtype=pl.Int64).alias("to_par"))
@@ -850,7 +981,10 @@ def _build_round_clubs_table(shots: pl.DataFrame) -> pl.DataFrame:
     normalized = shots.with_columns(
         [
             pl.col("club").cast(pl.String, strict=False).fill_null("Unknown").alias("club"),
-            pl.col("shot_type").cast(pl.String, strict=False).fill_null("UNKNOWN").alias("shot_type"),
+            pl.col("shot_type")
+            .cast(pl.String, strict=False)
+            .fill_null("UNKNOWN")
+            .alias("shot_type"),
         ]
     )
     trimmed = trim_distance_outliers(normalized, group_columns=["club"])
@@ -881,7 +1015,11 @@ def _build_round_clubs_table(shots: pl.DataFrame) -> pl.DataFrame:
         parts = [f"{row.get('shot_type')}: {row.get('count')}" for row in frame.to_dicts()[:4]]
         rows.append({"club": club_name, "shot_type_breakdown": ", ".join(parts)})
     type_summary = pl.DataFrame(rows) if rows else pl.DataFrame()
-    result = clubs.join(type_summary, on="club", how="left") if not type_summary.is_empty() else clubs
+    result = (
+        clubs.join(type_summary, on="club", how="left")
+        if not type_summary.is_empty()
+        else clubs
+    )
     return result.sort(["shots", "club"], descending=[True, False], nulls_last=True)
 
 
@@ -900,6 +1038,12 @@ def _format_round_title(round_id: int, round_info: pl.DataFrame) -> str:
 
 def _display_value(value: object) -> str:
     return "" if value is None else str(value)
+
+
+def _filter_round_table(frame: pl.DataFrame, round_ids: list[int]) -> pl.DataFrame:
+    if frame.is_empty() or "round_id" not in frame.columns or not round_ids:
+        return frame.head(0)
+    return frame.filter(pl.col("round_id").is_in(round_ids))
 
 
 def _emit_json(payload: object) -> None:

@@ -14,11 +14,17 @@ CLI-first Python project to download golf data from Garmin Connect, store it loc
 
 ```bash
 uv sync --extra dev
+google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-debug
+# log into Garmin Connect in that Chrome window first
 uv run garmin-golf mirror scorecards --url https://connect.garmin.com/app/scorecards/<username>
 uv run garmin-golf stats rounds
 uv run garmin-golf stats courses
 uv run garmin-golf stats summary
 ```
+
+The mirror command attaches to a Chrome instance with remote debugging enabled and reuses your
+logged-in Garmin session. If you have not set that up yet, follow the Chrome steps in
+[`Garmin golf data caveat`](#garmin-golf-data-caveat) before running the mirror.
 
 The local stats summary includes normalized 18-hole score averages plus hole-level metrics such as GIR, FIR,
 scrambling, scoring breakdowns, par-type scoring, three-putt rate, and penalty rate when the mirrored scorecard
@@ -48,11 +54,32 @@ uv run garmin-golf stats round --round-id 22068626916
 The round view includes the round summary, a hole-by-hole table, club usage for that round, and a
 second-shot breakdown for par 4s and par 5s when shot data is available.
 
+To inspect rolling trends over your recent rounds:
+
+```bash
+uv run garmin-golf stats trends --window 5
+uv run garmin-golf stats trends --window 10 --period last-12-months
+```
+
+The trends view shows each round alongside rolling averages and deltas for score to par, GIR, FIR,
+scrambling, three-putt rate, and penalties over the selected trailing round window.
+
+To inspect club usage by golf context instead of only raw inventory:
+
+```bash
+uv run garmin-golf stats clubs --by-context
+uv run garmin-golf stats clubs --by-context --json
+```
+
+That view groups clubs by contexts such as par-3 tee shots, par-4 tee shots, par-4 approaches,
+par-5 second shots, short game, recovery, and putting.
+
 For agent or script consumption, most commands also support `--json`:
 
 ```bash
 uv run garmin-golf stats summary --json
 uv run garmin-golf stats round --round-id 22068626916 --json
+uv run garmin-golf stats trends --window 5 --json
 uv run garmin-golf stats clubs --json
 ```
 
@@ -97,7 +124,8 @@ Precedence is: environment variables, then local `.env`, then `~/.config/garmin-
 Club names are inferred from Garmin shot metadata and may not match a player's actual bag exactly.
 Use `uv run garmin-golf stats clubs` to inspect observed `club_id` values, inferred names, configured
 names, shot counts, and average distances, then add `club_name_overrides` entries for any ids that
-need bag-specific labels.
+need bag-specific labels. Use `uv run garmin-golf stats clubs --by-context` to inspect how each club
+is used across tee shots, approaches, short game, recovery shots, and putting contexts.
 
 Displayed distance averages in `stats summary`, `stats clubs`, and `stats second-shots` trim obvious
 outliers automatically: once a comparison group has at least 5 shots, distances outside `mean +/- 2`

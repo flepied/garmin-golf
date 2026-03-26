@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import cast
 
 import polars as pl
@@ -207,6 +208,104 @@ def build_round_stats(
     return summary
 
 
+def build_round_trends(
+    rounds: pl.DataFrame,
+    holes: pl.DataFrame,
+    shots: pl.DataFrame | None = None,
+    *,
+    window: int = 5,
+) -> pl.DataFrame:
+    shots = shots if shots is not None else pl.DataFrame()
+    if rounds.is_empty() or "round_id" not in rounds.columns:
+        return pl.DataFrame()
+    if window <= 0:
+        return pl.DataFrame()
+
+    ordered_rounds = _sort_rounds_for_trends(rounds)
+    round_rows = ordered_rounds.to_dicts()
+    if not round_rows:
+        return pl.DataFrame()
+
+    trend_rows: list[dict[str, object]] = []
+    for index, round_row in enumerate(round_rows):
+        round_id = round_row.get("round_id")
+        if not isinstance(round_id, int):
+            continue
+
+        current_window_rows = round_rows[max(0, index - window + 1) : index + 1]
+        previous_window_rows = round_rows[
+            max(0, index - (window * 2) + 1) : max(0, index - window + 1)
+        ]
+
+        current_window_round_ids = _extract_round_ids(current_window_rows)
+        previous_window_round_ids = _extract_round_ids(previous_window_rows)
+
+        current_rounds = ordered_rounds.filter(pl.col("round_id") == round_id)
+        current_holes = _filter_by_round_ids(holes, [round_id])
+        current_shots = _filter_by_round_ids(shots, [round_id])
+        current_summary = build_summary_stats(current_rounds, current_holes, current_shots)
+
+        window_rounds = _filter_by_round_ids(ordered_rounds, current_window_round_ids)
+        window_holes = _filter_by_round_ids(holes, current_window_round_ids)
+        window_shots = _filter_by_round_ids(shots, current_window_round_ids)
+        window_summary = build_summary_stats(window_rounds, window_holes, window_shots)
+
+        previous_summary: dict[str, float | int | str] | None = None
+        if previous_window_round_ids:
+            previous_rounds = _filter_by_round_ids(ordered_rounds, previous_window_round_ids)
+            previous_holes = _filter_by_round_ids(holes, previous_window_round_ids)
+            previous_shots = _filter_by_round_ids(shots, previous_window_round_ids)
+            previous_summary = build_summary_stats(previous_rounds, previous_holes, previous_shots)
+
+        trend_rows.append(
+            {
+                "round_id": round_id,
+                "played_on": round_row.get("played_on"),
+                "course_name": _trend_course_name(round_row),
+                "hole_count": int(current_holes.height) if not current_holes.is_empty() else 0,
+                "window": window,
+                "rounds_in_window": len(current_window_round_ids),
+                "rounds_in_previous_window": len(previous_window_round_ids),
+                "round_to_par": _as_float(current_summary.get("average_to_par")),
+                "round_gir_pct": _as_float(current_summary.get("gir_pct")),
+                "round_fir_pct": _as_float(current_summary.get("fir_pct")),
+                "round_scrambling_pct": _as_float(current_summary.get("scrambling_pct")),
+                "round_three_putts_per_18": _as_float(current_summary.get("three_putts_per_18")),
+                "round_penalties_per_18": _as_float(current_summary.get("penalties_per_18")),
+                "window_average_to_par": _as_float(window_summary.get("average_to_par")),
+                "window_gir_pct": _as_float(window_summary.get("gir_pct")),
+                "window_fir_pct": _as_float(window_summary.get("fir_pct")),
+                "window_scrambling_pct": _as_float(window_summary.get("scrambling_pct")),
+                "window_three_putts_per_18": _as_float(window_summary.get("three_putts_per_18")),
+                "window_penalties_per_18": _as_float(window_summary.get("penalties_per_18")),
+                "delta_average_to_par": _delta_metric(
+                    window_summary, previous_summary, "average_to_par"
+                ),
+                "delta_gir_pct": _delta_metric(window_summary, previous_summary, "gir_pct"),
+                "delta_fir_pct": _delta_metric(window_summary, previous_summary, "fir_pct"),
+                "delta_scrambling_pct": _delta_metric(
+                    window_summary, previous_summary, "scrambling_pct"
+                ),
+                "delta_three_putts_per_18": _delta_metric(
+                    window_summary, previous_summary, "three_putts_per_18"
+                ),
+                "delta_penalties_per_18": _delta_metric(
+                    window_summary, previous_summary, "penalties_per_18"
+                ),
+            }
+        )
+
+    if not trend_rows:
+        return pl.DataFrame()
+
+    trend_frame = pl.DataFrame(trend_rows)
+    return trend_frame.sort(
+        by=["played_on", "round_id"],
+        descending=[True, True],
+        nulls_last=True,
+    )
+
+
 def build_course_hole_stats(rounds: pl.DataFrame, holes: pl.DataFrame) -> pl.DataFrame:
     if (
         rounds.is_empty()
@@ -333,35 +432,40 @@ def build_practice_focus_stats(
             penalties_per_18,
             (
                 "Penalty control",
-                f"{penalties_per_18:.2f} penalties per 18; focus on tee-shot and recovery discipline.",
+                f"{penalties_per_18:.2f} penalties per 18; "
+                "focus on tee-shot and recovery discipline.",
             ),
         ),
         (
             three_putts_per_18,
             (
                 "Lag putting",
-                f"{three_putts_per_18:.2f} three-putts per 18; prioritize pace control from long range.",
+                f"{three_putts_per_18:.2f} three-putts per 18; "
+                "prioritize pace control from long range.",
             ),
         ),
         (
             failed_scrambles_per_18 * 0.5,
             (
                 "Scrambling",
-                f"{failed_scrambles_per_18:.2f} failed saves per 18 after missed GIR; practice chips and first putts inside scoring range.",
+                f"{failed_scrambles_per_18:.2f} failed saves per 18 after missed GIR; "
+                "practice chips and first putts inside scoring range.",
             ),
         ),
         (
             missed_gir_per_18 * 0.15,
             (
                 "Approach play",
-                f"{missed_gir_per_18:.2f} missed greens per 18; tighten start lines and distance control into greens.",
+                f"{missed_gir_per_18:.2f} missed greens per 18; "
+                "tighten start lines and distance control into greens.",
             ),
         ),
         (
             missed_fairways_per_18 * 0.1,
             (
                 "Driving accuracy",
-                f"{missed_fairways_per_18:.2f} missed fairways per 18; favor stock tee-shot shapes and conservative targets.",
+                f"{missed_fairways_per_18:.2f} missed fairways per 18; "
+                "favor stock tee-shot shapes and conservative targets.",
             ),
         ),
     ]
@@ -463,9 +567,204 @@ def build_second_shot_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.Data
     )
 
 
+def build_club_context_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.DataFrame:
+    if (
+        holes.is_empty()
+        or shots.is_empty()
+        or "round_id" not in holes.columns
+        or "hole_number" not in holes.columns
+        or "par" not in holes.columns
+        or "round_id" not in shots.columns
+        or "hole_number" not in shots.columns
+        or "shot_number" not in shots.columns
+    ):
+        return pl.DataFrame()
+
+    hole_scoring = _holes_with_relative_score(holes)
+    joined = (
+        shots.join(
+            holes.select(["round_id", "hole_number", "par"]),
+            on=["round_id", "hole_number"],
+            how="inner",
+        )
+        .join(
+            hole_scoring.select(["round_id", "hole_number", "to_par"]),
+            on=["round_id", "hole_number"],
+            how="left",
+        )
+        .with_columns(
+            [
+                pl.col("par").cast(pl.Int64, strict=False).alias("par"),
+                pl.col("shot_number").cast(pl.Int64, strict=False).alias("shot_number"),
+                pl.col("club")
+                .cast(pl.String, strict=False)
+                .fill_null("Unknown")
+                .str.strip_chars()
+                .alias("club"),
+                pl.col("lie")
+                .cast(pl.String, strict=False)
+                .fill_null("Unknown")
+                .str.strip_chars()
+                .alias("lie"),
+                pl.col("shot_type")
+                .cast(pl.String, strict=False)
+                .fill_null("UNKNOWN")
+                .str.strip_chars()
+                .alias("shot_type"),
+                pl.col("distance_meters").cast(pl.Float64, strict=False).alias("distance_meters"),
+            ]
+        )
+        .with_columns(_club_context_expr().alias("context"))
+    )
+    if joined.is_empty():
+        return pl.DataFrame()
+
+    trimmed = trim_distance_outliers(joined, group_columns=["club", "context"])
+    distance_summary = (
+        trimmed.group_by(["club", "context"])
+        .agg(pl.col("distance_meters").mean().alias("avg_distance_m"))
+        if not trimmed.is_empty()
+        else pl.DataFrame(
+            schema={
+                "club": pl.String,
+                "context": pl.String,
+                "avg_distance_m": pl.Float64,
+            }
+        )
+    )
+
+    return (
+        joined.group_by(["club", "context"])
+        .agg(
+            [
+                pl.len().alias("shots"),
+                pl.col("round_id").n_unique().alias("rounds"),
+                _pct_expr(pl.col("to_par") <= 0).alias("par_or_better_pct"),
+                _pct_expr(pl.col("to_par") >= 1).alias("bogey_or_worse_pct"),
+                _pct_expr(pl.col("to_par") >= 2).alias("double_or_worse_pct"),
+                pl.col("to_par").cast(pl.Float64, strict=False).mean().alias("avg_to_par"),
+                _format_mode_expr("shot_type").alias("shot_type"),
+                _format_mode_expr("lie").alias("lie"),
+            ]
+        )
+        .join(distance_summary, on=["club", "context"], how="left")
+        .sort(
+            by=["shots", "club", "context"],
+            descending=[True, False, False],
+            nulls_last=True,
+        )
+        .with_columns(
+            [
+                pl.col("avg_distance_m").round(1),
+                pl.col("par_or_better_pct").round(2),
+                pl.col("bogey_or_worse_pct").round(2),
+                pl.col("double_or_worse_pct").round(2),
+                pl.col("avg_to_par").round(2),
+            ]
+        )
+    )
+
+
 def _mean(series: pl.Series) -> float:
     value = series.cast(pl.Float64, strict=False).drop_nulls().mean()
     return float(cast(int | float, value)) if value is not None else 0.0
+
+
+def _club_context_expr() -> pl.Expr:
+    return (
+        pl.when(pl.col("shot_type") == "PUTT")
+        .then(pl.lit("putt"))
+        .when(pl.col("shot_number") == 1)
+        .then(
+            pl.when(pl.col("par") == 3)
+            .then(pl.lit("tee_par_3"))
+            .when(pl.col("par") == 4)
+            .then(pl.lit("tee_par_4"))
+            .when(pl.col("par") == 5)
+            .then(pl.lit("tee_par_5"))
+            .otherwise(pl.lit("tee_other"))
+        )
+        .when((pl.col("shot_number") == 2) & (pl.col("par") == 4))
+        .then(pl.lit("approach_par_4"))
+        .when((pl.col("shot_number") == 2) & (pl.col("par") == 5))
+        .then(pl.lit("second_par_5"))
+        .when(pl.col("shot_type").is_in(["CHIP", "PITCH", "BUNKER"]))
+        .then(pl.lit("short_game"))
+        .when(pl.col("lie").str.to_lowercase().str.contains("green"))
+        .then(pl.lit("putt"))
+        .when(pl.col("shot_type").is_in(["LAYUP", "RECOVERY"]))
+        .then(pl.col("shot_type").str.to_lowercase())
+        .otherwise(pl.lit("other"))
+    )
+
+
+def _format_mode_expr(column: str) -> pl.Expr:
+    return (
+        pl.col(column)
+        .drop_nulls()
+        .mode()
+        .first()
+        .fill_null("Unknown")
+        .alias(column)
+    )
+
+
+def _sort_rounds_for_trends(rounds: pl.DataFrame) -> pl.DataFrame:
+    sort_columns: list[pl.Expr] = []
+    if "played_on" in rounds.columns:
+        sort_columns.append(pl.col("played_on").str.to_date(strict=False).alias("_played_on_date"))
+    if "round_id" in rounds.columns:
+        sort_columns.append(pl.col("round_id").cast(pl.Int64, strict=False).alias("_round_id_sort"))
+    if not sort_columns:
+        return rounds
+
+    working = rounds.with_columns(sort_columns)
+    return working.sort(
+        by=["_played_on_date", "_round_id_sort"],
+        descending=[False, False],
+        nulls_last=True,
+    ).drop(["_played_on_date", "_round_id_sort"], strict=False)
+
+
+def _extract_round_ids(round_rows: Sequence[dict[str, object]]) -> list[int]:
+    round_ids: list[int] = []
+    for row in round_rows:
+        round_id = row.get("round_id")
+        if isinstance(round_id, int):
+            round_ids.append(round_id)
+    return round_ids
+
+
+def _filter_by_round_ids(frame: pl.DataFrame, round_ids: list[int]) -> pl.DataFrame:
+    if frame.is_empty() or "round_id" not in frame.columns or not round_ids:
+        return frame.head(0)
+    return frame.filter(pl.col("round_id").is_in(round_ids))
+
+
+def _trend_course_name(round_row: dict[str, object]) -> str | None:
+    for key in ("display_course_name", "course_name", "location_name"):
+        value = round_row.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _as_float(value: object) -> float:
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, int | float):
+        return float(value)
+    return 0.0
+
+
+def _delta_metric(
+    current_summary: dict[str, float | int | str],
+    previous_summary: dict[str, float | int | str] | None,
+    key: str,
+) -> float | None:
+    if previous_summary is None:
+        return None
+    return round(_as_float(current_summary.get(key)) - _as_float(previous_summary.get(key)), 2)
 
 
 def trim_distance_outliers(frame: pl.DataFrame, *, group_columns: list[str]) -> pl.DataFrame:

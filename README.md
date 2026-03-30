@@ -73,10 +73,13 @@ To inspect club usage by golf context instead of only raw inventory:
 ```bash
 uv run garmin-golf stats clubs --by-context
 uv run garmin-golf stats clubs --by-context --json
+uv run garmin-golf stats clubs --course "Golf National ~ Aigle"
+uv run garmin-golf stats clubs --course "Golf National ~ Aigle" --hole 7 --by-context
 ```
 
 That view groups clubs by contexts such as par-3 tee shots, par-4 tee shots, par-4 approaches,
-par-5 second shots, short game, recovery, and putting.
+par-5 second shots, short game, recovery, and putting. Add `--course` to focus on one course across
+all recorded rounds there, and `--hole` to narrow further to one hole on that course.
 
 For agent or script consumption, most commands also support `--json`:
 

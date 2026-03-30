@@ -130,6 +130,8 @@ TREND_METRIC_OPTION = typer.Option(
     ),
 )
 COURSE_REQUIRED_OPTION = typer.Option(..., "--course", help="Exact course name to analyze.")
+COURSE_OPTION = typer.Option(None, "--course", help="Exact course name to analyze.")
+HOLE_OPTION = typer.Option(None, "--hole", min=1, max=18, help="Single hole number to analyze.")
 JSON_OPTION = typer.Option(False, "--json", help="Emit structured JSON to stdout.")
 BY_CONTEXT_OPTION = typer.Option(
     False,
@@ -439,10 +441,16 @@ def stats_second_shots(
 
 
 @stats_app.command("clubs")
-def stats_clubs(by_context: bool = BY_CONTEXT_OPTION, json_output: bool = JSON_OPTION) -> None:
+def stats_clubs(
+    by_context: bool = BY_CONTEXT_OPTION,
+    course: str | None = COURSE_OPTION,
+    hole: int | None = HOLE_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
     """List observed club ids with inferred and configured names."""
 
-    raw_shots = _shots_with_normalized_shot_types(_storage().read_table("shots"))
+    storage = _storage()
+    raw_shots = _shots_with_normalized_shot_types(storage.read_table("shots"))
     if raw_shots.is_empty() or "club_id" not in raw_shots.columns:
         if json_output:
             _emit_json([])
@@ -453,15 +461,29 @@ def stats_clubs(by_context: bool = BY_CONTEXT_OPTION, json_output: bool = JSON_O
         )
         return
 
-    resolved_shots = _shots_with_configured_club_names(raw_shots)
+    raw_shots, resolved_shots, filtered_holes = _filter_club_stats_tables(
+        raw_shots=raw_shots,
+        resolved_shots=_shots_with_configured_club_names(raw_shots),
+        holes=storage.read_table("holes"),
+        course=course,
+        hole=hole,
+    )
+    if raw_shots.is_empty():
+        if json_output:
+            _emit_json([])
+            return
+        _console().print(f"No club data is available for {_club_stats_scope_label(course, hole)}.")
+        return
+
     if by_context:
-        holes = _storage().read_table("holes")
-        context_stats = build_club_context_stats(holes, resolved_shots)
+        context_stats = build_club_context_stats(filtered_holes, resolved_shots)
         if context_stats.is_empty():
             if json_output:
                 _emit_json([])
                 return
-            _console().print("No context-aware club data is available for this selection yet.")
+            _console().print(
+                f"No context-aware club data is available for {_club_stats_scope_label(course, hole)}."
+            )
             return
         if json_output:
             _emit_json(context_stats)
@@ -474,7 +496,7 @@ def stats_clubs(by_context: bool = BY_CONTEXT_OPTION, json_output: bool = JSON_O
         if json_output:
             _emit_json([])
             return
-        _console().print("No club ids were found in the local shot dataset.")
+        _console().print(f"No club ids were found for {_club_stats_scope_label(course, hole)}.")
         return
     if json_output:
         _emit_json(club_inventory)
@@ -1233,6 +1255,55 @@ def _load_canonical_rounds(
     if canonical_rounds.is_empty():
         return canonical_rounds
     return canonical_rounds.with_columns(_display_course_expr(canonical_rounds))
+
+
+def _filter_club_stats_tables(
+    *,
+    raw_shots: pl.DataFrame,
+    resolved_shots: pl.DataFrame,
+    holes: pl.DataFrame,
+    course: str | None,
+    hole: int | None,
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    filtered_raw_shots = raw_shots
+    filtered_resolved_shots = resolved_shots
+    filtered_holes = holes
+
+    if course is not None:
+        canonical_rounds = _load_canonical_rounds(date_from=None, date_to=None, period=None)
+        if canonical_rounds.is_empty():
+            raise typer.BadParameter("No courses are available yet. Run `garmin-golf stats courses` first.")
+        target_rounds = canonical_rounds.filter(pl.col("display_course_name") == course)
+        if target_rounds.is_empty():
+            raise typer.BadParameter(
+                f"Course not found: {course}. Use `garmin-golf stats courses` to inspect available names."
+            )
+        round_ids = target_rounds["round_id"].drop_nulls().to_list()
+        filtered_raw_shots = _filter_round_table(filtered_raw_shots, round_ids)
+        filtered_resolved_shots = _filter_round_table(filtered_resolved_shots, round_ids)
+        filtered_holes = _filter_round_table(filtered_holes, round_ids)
+
+    if hole is not None:
+        filtered_raw_shots = _filter_hole_table(filtered_raw_shots, hole)
+        filtered_resolved_shots = _filter_hole_table(filtered_resolved_shots, hole)
+        filtered_holes = _filter_hole_table(filtered_holes, hole)
+
+    return filtered_raw_shots, filtered_resolved_shots, filtered_holes
+
+
+def _filter_hole_table(frame: pl.DataFrame, hole: int) -> pl.DataFrame:
+    if frame.is_empty() or "hole_number" not in frame.columns:
+        return frame.clear()
+    return frame.filter(pl.col("hole_number").cast(pl.Int64, strict=False) == hole)
+
+
+def _club_stats_scope_label(course: str | None, hole: int | None) -> str:
+    parts: list[str] = []
+    if course is not None:
+        parts.append(f'course "{course}"')
+    if hole is not None:
+        parts.append(f"hole {hole}")
+    return " / ".join(parts) if parts else "the current dataset"
 
 
 def _display_course_expr(rounds: pl.DataFrame) -> pl.Expr:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from pydantic import Field
@@ -81,3 +82,46 @@ def default_config_template() -> str:
         '# "10400967" = "3 Hybrid"\n'
         '# "10400977" = "56 Wedge"\n'
     )
+
+
+def set_club_name_override(config_file: Path, club_id: int, club_name: str) -> bool:
+    content = config_file.read_text(encoding="utf-8") if config_file.exists() else ""
+    lines = content.splitlines()
+
+    section_header = "[club_name_overrides]"
+    entry = f'"{club_id}" = "{_toml_basic_string(club_name)}"'
+    section_index = next(
+        (index for index, line in enumerate(lines) if line.strip() == section_header),
+        None,
+    )
+
+    if section_index is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append(section_header)
+        lines.append(entry)
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return False
+
+    entry_pattern = re.compile(rf'^\s*"{club_id}"\s*=')
+    insert_at = len(lines)
+    for index in range(section_index + 1, len(lines)):
+        stripped = lines[index].strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            insert_at = index
+            break
+        if entry_pattern.match(lines[index]):
+            lines[index] = entry
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+            config_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            return True
+
+    lines.insert(insert_at, entry)
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return False
+
+
+def _toml_basic_string(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')

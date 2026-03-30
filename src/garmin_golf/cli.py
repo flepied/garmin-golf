@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .browser_mirror import BrowserMirror, BrowserMirrorError, validate_scorecards_url
-from .config import default_config_template, get_config_file, get_settings
+from .config import default_config_template, get_config_file, get_settings, set_club_name_override
 from .stats import (
     TREND_METRIC_COLUMNS,
     build_club_context_stats,
@@ -173,6 +173,32 @@ def config_show_path(json_output: bool = JSON_OPTION) -> None:
         _emit_json({"config_path": config_path})
         return
     _console().print(config_path)
+
+
+@config_app.command("set-club-name")
+def config_set_club_name(
+    club_id: int = typer.Option(..., "--club-id", help="Garmin club_id to override."),
+    name: str = typer.Option(..., "--name", help="Bag-specific club label to display."),
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Write or update a club-name override in the active config file."""
+
+    config_file = get_config_file()
+    existed = set_club_name_override(config_file, club_id, name)
+    if json_output:
+        _emit_json(
+            {
+                "config_path": str(config_file),
+                "club_id": club_id,
+                "club_name": name,
+                "updated_existing": existed,
+            }
+        )
+        return
+    action = "Updated" if existed else "Set"
+    _console().print(
+        f"[green]{action} club-name override:[/green] {club_id} -> {name} ({config_file})"
+    )
 
 
 @mirror_app.command("scorecards")

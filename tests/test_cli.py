@@ -27,6 +27,41 @@ def test_auth_command_is_not_exposed() -> None:
     assert " inspect " not in result.stdout
 
 
+def test_config_set_club_name_command_creates_override(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    config_file = tmp_path / "config.toml"
+    monkeypatch.setenv("GARMIN_GOLF_CONFIG_FILE", str(config_file))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["config", "set-club-name", "--club-id", "10400977", "--name", "58 Wedge"],
+    )
+
+    assert result.exit_code == 0
+    assert '"10400977" = "58 Wedge"' in config_file.read_text(encoding="utf-8")
+
+
+def test_config_set_club_name_command_updates_existing_override(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    config_file = tmp_path / "config.toml"
+    config_file.write_text('[club_name_overrides]\n"10400977" = "Lob Wedge"\n', encoding="utf-8")
+    monkeypatch.setenv("GARMIN_GOLF_CONFIG_FILE", str(config_file))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["config", "set-club-name", "--club-id", "10400977", "--name", "58 Wedge"],
+    )
+
+    assert result.exit_code == 0
+    content = config_file.read_text(encoding="utf-8")
+    assert '"10400977" = "58 Wedge"' in content
+    assert '"10400977" = "Lob Wedge"' not in content
+
+
 def test_stats_summary_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
     storage = Storage(Settings())

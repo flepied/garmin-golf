@@ -14,7 +14,7 @@ CLI-first Python project to download golf data from Garmin Connect, store it loc
 
 ```bash
 uv sync --extra dev
-google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-debug
+google-chrome --remote-debugging-port=9222 --user-data-dir=$HOME/.config/chrome-garmin-golf https://connect.garmin.com/
 # log into Garmin Connect in that Chrome window first
 uv run garmin-golf mirror scorecards --url https://connect.garmin.com/app/scorecards/<username>
 uv run garmin-golf stats rounds
@@ -131,6 +131,8 @@ Use `uv run garmin-golf stats clubs` to inspect observed `club_id` values, infer
 names, shot counts, and average distances, then add `club_name_overrides` entries for any ids that
 need bag-specific labels. Use `uv run garmin-golf stats clubs --by-context` to inspect how each club
 is used across tee shots, approaches, short game, recovery shots, and putting contexts.
+You can also write an override directly with
+`uv run garmin-golf config set-club-name --club-id 10400977 --name "56 Wedge"`.
 
 Displayed distance averages in `stats summary`, `stats clubs`, and `stats second-shots` trim obvious
 outliers automatically: once a comparison group has at least 5 shots, distances outside `mean +/- 2`
@@ -156,7 +158,7 @@ The mirror command:
 Start Chrome with remote debugging and log into Garmin in that browser first:
 
 ```bash
-google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-debug
+google-chrome --remote-debugging-port=9222 --user-data-dir=$HOME/.config/chrome-garmin-golf https://connect.garmin.com/
 curl -sS http://127.0.0.1:9222/json/version
 uv run garmin-golf mirror scorecards \
   --url https://connect.garmin.com/app/scorecards/<username> \

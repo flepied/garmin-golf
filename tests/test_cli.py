@@ -773,6 +773,116 @@ def test_stats_clubs_command_by_context_filters_by_course_and_hole(
     assert payload[0]["club"] == "Driver"
 
 
+def test_stats_putting_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [{"round_id": 1, "played_on": "2025-06-01", "total_score": 82, "total_par": 72}],
+        unique_by=["round_id"],
+    )
+    storage.upsert_rows(
+        "holes",
+        [
+            {"round_id": 1, "hole_number": 1, "putts": 1},
+            {"round_id": 1, "hole_number": 2, "putts": 3},
+        ],
+        unique_by=["round_id", "hole_number"],
+    )
+    storage.upsert_rows(
+        "shots",
+        [
+            {
+                "round_id": 1,
+                "hole_number": 1,
+                "shot_number": 3,
+                "shot_type": "PUTT",
+                "club": "Putter",
+                "distance_meters": 1.4,
+            },
+            {
+                "round_id": 1,
+                "hole_number": 2,
+                "shot_number": 2,
+                "shot_type": "PUTT",
+                "club": "Putter",
+                "distance_meters": 11.0,
+            },
+            {
+                "round_id": 1,
+                "hole_number": 2,
+                "shot_number": 3,
+                "shot_type": "PUTT",
+                "club": "Putter",
+                "distance_meters": 1.0,
+            },
+            {
+                "round_id": 1,
+                "hole_number": 2,
+                "shot_number": 4,
+                "shot_type": "PUTT",
+                "club": "Putter",
+                "distance_meters": 0.2,
+            },
+        ],
+        unique_by=["round_id", "hole_number", "shot_number"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "putting"], terminal_width=200)
+
+    assert result.exit_code == 0
+    assert "Putting Stats" in result.stdout
+    assert "distance_bucket" in result.stdout
+    assert "1-2m" in result.stdout
+    assert "10-15m" in result.stdout
+
+
+def test_stats_putting_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [{"round_id": 1, "played_on": "2025-06-01", "total_score": 82, "total_par": 72}],
+        unique_by=["round_id"],
+    )
+    storage.upsert_rows(
+        "holes",
+        [{"round_id": 1, "hole_number": 1, "putts": 2}],
+        unique_by=["round_id", "hole_number"],
+    )
+    storage.upsert_rows(
+        "shots",
+        [
+            {
+                "round_id": 1,
+                "hole_number": 1,
+                "shot_number": 3,
+                "shot_type": "PUTT",
+                "club": "Putter",
+                "distance_meters": 4.2,
+            },
+            {
+                "round_id": 1,
+                "hole_number": 1,
+                "shot_number": 4,
+                "shot_type": "PUTT",
+                "club": "Putter",
+                "distance_meters": 0.2,
+            },
+        ],
+        unique_by=["round_id", "hole_number", "shot_number"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "putting", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload[0]["distance_bucket"] == "3-5m"
+    assert payload[0]["two_putt_pct"] == 100.0
+
+
 def test_stats_summary_command_with_date_range(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
     storage = Storage(Settings())

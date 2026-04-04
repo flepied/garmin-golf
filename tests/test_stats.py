@@ -7,6 +7,7 @@ from garmin_golf.stats import (
     build_course_hole_stats,
     build_metric_trend_series,
     build_practice_focus_stats,
+    build_putting_stats,
     build_round_stats,
     build_round_trends,
     build_second_shot_stats,
@@ -241,6 +242,78 @@ def test_trim_distance_outliers_keeps_small_samples_and_zero_variance() -> None:
 
     assert trimmed_small.height == 3
     assert trimmed_zero_variance.height == 6
+
+
+def test_build_putting_stats() -> None:
+    holes = pl.DataFrame(
+        [
+            {"round_id": 1, "hole_number": 1, "putts": 1},
+            {"round_id": 1, "hole_number": 2, "putts": 2},
+            {"round_id": 1, "hole_number": 3, "putts": 3},
+        ]
+    )
+    shots = pl.DataFrame(
+        [
+            {
+                "round_id": 1,
+                "hole_number": 1,
+                "shot_number": 3,
+                "shot_type": "PUTT",
+                "distance_meters": 1.5,
+            },
+            {
+                "round_id": 1,
+                "hole_number": 2,
+                "shot_number": 3,
+                "shot_type": "PUTT",
+                "distance_meters": 4.0,
+            },
+            {
+                "round_id": 1,
+                "hole_number": 2,
+                "shot_number": 4,
+                "shot_type": "PUTT",
+                "distance_meters": 0.3,
+            },
+            {
+                "round_id": 1,
+                "hole_number": 3,
+                "shot_number": 2,
+                "shot_type": "PUTT",
+                "distance_meters": 12.0,
+            },
+            {
+                "round_id": 1,
+                "hole_number": 3,
+                "shot_number": 3,
+                "shot_type": "PUTT",
+                "distance_meters": 1.2,
+            },
+            {
+                "round_id": 1,
+                "hole_number": 3,
+                "shot_number": 4,
+                "shot_type": "PUTT",
+                "distance_meters": 0.4,
+            },
+        ]
+    )
+
+    stats = build_putting_stats(holes, shots)
+
+    assert stats.height == 3
+
+    short_putt = stats.filter(pl.col("distance_bucket") == "1-2m").row(0, named=True)
+    assert short_putt["holes"] == 1
+    assert short_putt["avg_start_distance_m"] == 1.5
+    assert short_putt["one_putt_pct"] == 100.0
+    assert short_putt["two_putt_pct"] == 0.0
+
+    mid_putt = stats.filter(pl.col("distance_bucket") == "3-5m").row(0, named=True)
+    assert mid_putt["two_putt_pct"] == 100.0
+
+    lag_putt = stats.filter(pl.col("distance_bucket") == "10-15m").row(0, named=True)
+    assert lag_putt["three_putt_plus_pct"] == 100.0
 
 
 def test_build_summary_stats_trims_distance_outliers_for_average_distances() -> None:

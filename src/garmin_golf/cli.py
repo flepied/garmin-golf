@@ -19,6 +19,7 @@ from .stats import (
     build_course_hole_stats,
     build_metric_trend_series,
     build_practice_focus_stats,
+    build_putting_stats,
     build_round_stats,
     build_round_trends,
     build_second_shot_stats,
@@ -504,6 +505,51 @@ def stats_clubs(
     _render_club_inventory_table(club_inventory)
 
 
+@stats_app.command("putting")
+def stats_putting(
+    date_from: str | None = DATE_FROM_OPTION,
+    date_to: str | None = DATE_TO_OPTION,
+    period: str | None = PERIOD_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Show first-putt outcomes by starting distance bucket."""
+
+    storage = _storage()
+    rounds = storage.read_table("rounds")
+    if rounds.is_empty():
+        if json_output:
+            _emit_json([])
+            return
+        _console().print("No local rounds found. Run `garmin-golf mirror scorecards ...` first.")
+        return
+
+    resolved_from, resolved_to = _resolve_date_window(
+        date_from=date_from,
+        date_to=date_to,
+        period=period,
+    )
+    holes = storage.read_table("holes")
+    shots = _shots_with_configured_club_names(storage.read_table("shots"))
+    _, filtered_holes, filtered_shots = _filter_stats_tables(
+        rounds,
+        holes,
+        shots,
+        date_from=resolved_from,
+        date_to=resolved_to,
+    )
+    putting = build_putting_stats(filtered_holes, filtered_shots)
+    if putting.is_empty():
+        if json_output:
+            _emit_json([])
+            return
+        _console().print("No putting shot data is available for this selection.")
+        return
+    if json_output:
+        _emit_json(putting)
+        return
+    _render_putting_table(putting)
+
+
 @stats_app.command("rounds")
 def stats_rounds(
     date_from: str | None = DATE_FROM_OPTION,
@@ -904,6 +950,25 @@ def _render_club_context_table(context_stats: pl.DataFrame) -> None:
         table.add_column(column, justify=justify)
 
     for row in context_stats.iter_rows(named=True):
+        table.add_row(*[_display_value(row.get(column)) for column in columns])
+    _console().print(table)
+
+
+def _render_putting_table(putting_stats: pl.DataFrame) -> None:
+    table = Table(title="Putting Stats")
+    columns = [
+        "distance_bucket",
+        "holes",
+        "avg_start_distance_m",
+        "one_putt_pct",
+        "two_putt_pct",
+        "three_putt_plus_pct",
+    ]
+    for column in columns:
+        justify = "right" if column != "distance_bucket" else "left"
+        table.add_column(column, justify=justify)
+
+    for row in putting_stats.iter_rows(named=True):
         table.add_row(*[_display_value(row.get(column)) for column in columns])
     _console().print(table)
 

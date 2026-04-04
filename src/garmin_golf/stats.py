@@ -587,6 +587,78 @@ def build_second_shot_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.Data
     )
 
 
+def build_putting_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.DataFrame:
+    if (
+        holes.is_empty()
+        or shots.is_empty()
+        or "round_id" not in holes.columns
+        or "hole_number" not in holes.columns
+        or "putts" not in holes.columns
+        or "round_id" not in shots.columns
+        or "hole_number" not in shots.columns
+        or "shot_number" not in shots.columns
+        or "shot_type" not in shots.columns
+        or "distance_meters" not in shots.columns
+    ):
+        return pl.DataFrame()
+
+    putts = (
+        shots.filter(pl.col("shot_type") == "PUTT")
+        .join(
+            holes.select(["round_id", "hole_number", "putts"]),
+            on=["round_id", "hole_number"],
+            how="inner",
+        )
+        .with_columns(
+            [
+                pl.col("shot_number").cast(pl.Int64, strict=False).alias("shot_number"),
+                pl.col("distance_meters").cast(pl.Float64, strict=False).alias("distance_meters"),
+                pl.col("putts").cast(pl.Int64, strict=False).alias("putts"),
+            ]
+        )
+    )
+    if putts.is_empty():
+        return pl.DataFrame()
+
+    first_putts = (
+        putts.sort(["round_id", "hole_number", "shot_number"])
+        .group_by(["round_id", "hole_number"])
+        .agg(
+            [
+                pl.col("distance_meters").first().alias("start_distance_m"),
+                pl.col("putts").first().alias("putts"),
+            ]
+        )
+        .drop_nulls(["start_distance_m", "putts"])
+        .with_columns(_putting_distance_bucket_exprs())
+    )
+    if first_putts.is_empty():
+        return pl.DataFrame()
+
+    return (
+        first_putts.group_by(["distance_bucket", "_distance_bucket_sort"])
+        .agg(
+            [
+                pl.len().alias("holes"),
+                pl.col("start_distance_m").mean().alias("avg_start_distance_m"),
+                _pct_expr(pl.col("putts") == 1).alias("one_putt_pct"),
+                _pct_expr(pl.col("putts") == 2).alias("two_putt_pct"),
+                _pct_expr(pl.col("putts") >= 3).alias("three_putt_plus_pct"),
+            ]
+        )
+        .sort("_distance_bucket_sort")
+        .drop("_distance_bucket_sort")
+        .with_columns(
+            [
+                pl.col("avg_start_distance_m").round(1),
+                pl.col("one_putt_pct").round(2),
+                pl.col("two_putt_pct").round(2),
+                pl.col("three_putt_plus_pct").round(2),
+            ]
+        )
+    )
+
+
 def build_club_context_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.DataFrame:
     if (
         holes.is_empty()
@@ -1157,6 +1229,44 @@ def _mean_for_filter(
     if value_column == "distance_meters":
         filtered = trim_distance_outliers(filtered, group_columns=[])
     return _mean(filtered[value_column])
+
+
+def _putting_distance_bucket_exprs() -> list[pl.Expr]:
+    start_distance = pl.col("start_distance_m")
+    return [
+        (
+            pl.when(start_distance < 1.0)
+            .then(pl.lit("0-1m"))
+            .when(start_distance < 2.0)
+            .then(pl.lit("1-2m"))
+            .when(start_distance < 3.0)
+            .then(pl.lit("2-3m"))
+            .when(start_distance < 5.0)
+            .then(pl.lit("3-5m"))
+            .when(start_distance < 10.0)
+            .then(pl.lit("5-10m"))
+            .when(start_distance < 15.0)
+            .then(pl.lit("10-15m"))
+            .otherwise(pl.lit("15m+"))
+            .alias("distance_bucket")
+        ),
+        (
+            pl.when(start_distance < 1.0)
+            .then(pl.lit(0))
+            .when(start_distance < 2.0)
+            .then(pl.lit(1))
+            .when(start_distance < 3.0)
+            .then(pl.lit(2))
+            .when(start_distance < 5.0)
+            .then(pl.lit(3))
+            .when(start_distance < 10.0)
+            .then(pl.lit(4))
+            .when(start_distance < 15.0)
+            .then(pl.lit(5))
+            .otherwise(pl.lit(6))
+            .alias("_distance_bucket_sort")
+        ),
+    ]
 
 
 def _format_count_breakdown(frame: pl.DataFrame, column: str, *, limit: int | None = None) -> str:

@@ -68,6 +68,14 @@ Use `--metric` to emit one graph-friendly series for a single aspect. Supported 
 `average_to_par`, `gir_pct`, `fir_pct`, `scrambling_pct`, `three_putts_per_18`, and
 `penalties_per_18`.
 
+To inspect first-putt outcomes by starting distance bucket:
+
+```bash
+uv run garmin-golf stats putting
+uv run garmin-golf stats putting --json
+uv run garmin-golf stats putting --period last-12-months
+```
+
 To inspect club usage by golf context instead of only raw inventory:
 
 ```bash

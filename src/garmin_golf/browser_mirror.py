@@ -6,7 +6,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 
@@ -125,7 +125,7 @@ class ChromeDebuggerSession:
         self._ws.send(json.dumps(message))
         while True:
             raw = self._ws.recv()
-            payload = json.loads(raw)
+            payload = cast(dict[str, Any], json.loads(raw))
             if payload.get("id") != self._next_id:
                 continue
             if "error" in payload:
@@ -188,9 +188,7 @@ class BrowserMirror:
         manifest_path: Path,
         force: bool,
     ) -> MirrorRunResult:
-        self.console.print(
-            f"[cyan]Attaching to Chrome debugger at[/cyan] {self.debugger_address}"
-        )
+        self.console.print(f"[cyan]Attaching to Chrome debugger at[/cyan] {self.debugger_address}")
         with ChromeDebuggerSession(self.debugger_address or "", console=self.console) as session:
             self.console.print(
                 "[cyan]Opening Garmin scorecards in a debugger-controlled tab.[/cyan]"
@@ -380,7 +378,7 @@ class BrowserMirror:
         if response.get("ok") is not True or not isinstance(response.get("json"), dict):
             status = response.get("status")
             raise BrowserMirrorError(f"Fetch failed for {url}: HTTP {status}")
-        return response["json"]
+        return cast(dict[str, Any], response["json"])
 
 
 def validate_scorecards_url(url: str) -> str:

@@ -4,6 +4,7 @@ import json
 from collections.abc import Mapping
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 import polars as pl
 import typer
@@ -91,6 +92,18 @@ def _shots_with_configured_club_names(shots: pl.DataFrame) -> pl.DataFrame:
 DATE_FROM_OPTION = typer.Option(None, "--from", help="Inclusive round date in YYYY-MM-DD format.")
 DATE_TO_OPTION = typer.Option(None, "--to", help="Inclusive round date in YYYY-MM-DD format.")
 ROUND_ID_REQUIRED_OPTION = typer.Option(..., "--round-id", help="Round id to inspect.")
+ROUND_COMMENT_OPTION = typer.Option(None, "--comment", help="Freeform round comment.")
+EXCLUDE_FROM_STATS_OPTION = typer.Option(
+    False,
+    "--exclude-from-stats",
+    help="Exclude the round from aggregate multi-round stats.",
+)
+INCLUDE_IN_STATS_OPTION = typer.Option(
+    False,
+    "--include-in-stats",
+    help="Include the round in aggregate multi-round stats.",
+)
+CLEAR_COMMENT_OPTION = typer.Option(False, "--clear-comment", help="Remove the round comment.")
 FORCE_OPTION = typer.Option(False, "--force", help="Overwrite an existing config file.")
 TIMEOUT_OPTION = typer.Option(
     300,
@@ -140,6 +153,7 @@ BY_CONTEXT_OPTION = typer.Option(
     help="Group club performance by golf context such as tee shots and approaches.",
 )
 ROUND_MATCH_TOLERANCE = timedelta(hours=2)
+TableJustify = Literal["default", "left", "center", "right", "full"]
 
 
 @config_app.command("init")
@@ -294,6 +308,58 @@ def stats_summary(
     _render_mapping("Golf Summary", summary)
 
 
+@stats_app.command("annotate-round")
+def stats_annotate_round(
+    round_id: int = ROUND_ID_REQUIRED_OPTION,
+    comment: str | None = ROUND_COMMENT_OPTION,
+    exclude_from_stats: bool = EXCLUDE_FROM_STATS_OPTION,
+    include_in_stats: bool = INCLUDE_IN_STATS_OPTION,
+    clear_comment: bool = CLEAR_COMMENT_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Set local round metadata such as aggregate-stat exclusion and comments."""
+
+    if exclude_from_stats and include_in_stats:
+        raise typer.BadParameter("Use either --exclude-from-stats or --include-in-stats, not both.")
+    if comment is not None and clear_comment:
+        raise typer.BadParameter("Use either --comment or --clear-comment, not both.")
+
+    storage = _storage()
+    rounds = storage.read_table("rounds")
+    canonical_rounds, round_aliases = _canonicalize_rounds(rounds)
+    resolved_round_id = round_aliases.get(round_id, round_id)
+    if canonical_rounds.is_empty() or "round_id" not in canonical_rounds.columns:
+        raise typer.BadParameter(f"Round {round_id} was not found in the local dataset.")
+
+    target = canonical_rounds.filter(pl.col("round_id") == resolved_round_id)
+    if target.is_empty():
+        raise typer.BadParameter(f"Round {round_id} was not found in the local dataset.")
+
+    row = target.row(0, named=True)
+    if exclude_from_stats:
+        row["exclude_from_stats"] = True
+    elif include_in_stats or "exclude_from_stats" not in row:
+        row["exclude_from_stats"] = False
+
+    if clear_comment:
+        row["comment"] = None
+    elif comment is not None:
+        row["comment"] = comment
+    elif "comment" not in row:
+        row["comment"] = None
+
+    storage.upsert_rows("rounds", [row], unique_by=["round_id"])
+    payload = {
+        "round_id": resolved_round_id,
+        "exclude_from_stats": bool(row.get("exclude_from_stats")),
+        "comment": row.get("comment"),
+    }
+    if json_output:
+        _emit_json(payload)
+        return
+    _render_mapping("Round Annotation", payload)
+
+
 @stats_app.command("practice-focus")
 def stats_practice_focus(
     date_from: str | None = DATE_FROM_OPTION,
@@ -349,9 +415,7 @@ def stats_trends(
         raise typer.BadParameter("--window must be one of: 5, 10, 20.")
     if metric is not None and metric not in TREND_METRIC_COLUMNS:
         supported = ", ".join(sorted(TREND_METRIC_COLUMNS))
-        raise typer.BadParameter(
-            f"Unsupported trend metric: {metric}. Use one of: {supported}."
-        )
+        raise typer.BadParameter(f"Unsupported trend metric: {metric}. Use one of: {supported}.")
 
     storage = _storage()
     canonical_rounds = _load_canonical_rounds(
@@ -451,14 +515,24 @@ def stats_clubs(
     """List observed club ids with inferred and configured names."""
 
     storage = _storage()
+    rounds = storage.read_table("rounds")
     raw_shots = _shots_with_normalized_shot_types(storage.read_table("shots"))
+    included_rounds = _load_canonical_rounds(
+        date_from=None,
+        date_to=None,
+        period=None,
+    )
+    if not rounds.is_empty() and included_rounds.is_empty():
+        raw_shots = raw_shots.head(0)
+    elif not included_rounds.is_empty() and "round_id" in included_rounds.columns:
+        included_round_ids = included_rounds["round_id"].drop_nulls().to_list()
+        raw_shots = _filter_round_table(raw_shots, included_round_ids)
     if raw_shots.is_empty() or "club_id" not in raw_shots.columns:
         if json_output:
             _emit_json([])
             return
         _console().print(
-            "No club data is available yet. "
-            "Run `garmin-golf mirror scorecards ...` first."
+            "No club data is available yet. Run `garmin-golf mirror scorecards ...` first."
         )
         return
 
@@ -483,7 +557,8 @@ def stats_clubs(
                 _emit_json([])
                 return
             _console().print(
-                f"No context-aware club data is available for {_club_stats_scope_label(course, hole)}."
+                "No context-aware club data is available for "
+                f"{_club_stats_scope_label(course, hole)}."
             )
             return
         if json_output:
@@ -579,6 +654,7 @@ def stats_rounds(
         pl.DataFrame(),
         date_from=resolved_from,
         date_to=resolved_to,
+        include_excluded=True,
     )
     canonical_rounds, _ = _canonicalize_rounds(filtered_rounds)
     if canonical_rounds.is_empty():
@@ -699,6 +775,10 @@ def stats_round(round_id: int = ROUND_ID_REQUIRED_OPTION, json_output: bool = JS
         resolved_round_id,
     )
     round_info = canonical_rounds.filter(pl.col("round_id") == resolved_round_id)
+    if not round_info.is_empty():
+        round_row = round_info.row(0, named=True)
+        summary["exclude_from_stats"] = bool(round_row.get("exclude_from_stats"))
+        summary["comment"] = str(round_row["comment"]) if round_row.get("comment") else ""
     round_title = _format_round_title(resolved_round_id, round_info)
 
     holes = (
@@ -751,16 +831,25 @@ def _render_rounds_table(rounds: pl.DataFrame) -> None:
     table.add_column("round_id", justify="right")
     table.add_column("played_on")
     table.add_column("course_name")
+    if "exclude_from_stats" in rounds.columns:
+        table.add_column("exclude_from_stats")
+    if "comment" in rounds.columns:
+        table.add_column("comment")
 
     for row in rounds.iter_rows(named=True):
         round_id = row.get("round_id")
         played_on = row.get("played_on")
         course_name = row.get("display_course_name")
-        table.add_row(
+        values = [
             _display_value(round_id),
             _display_value(played_on),
             _display_value(course_name),
-        )
+        ]
+        if "exclude_from_stats" in rounds.columns:
+            values.append(_display_value(row.get("exclude_from_stats")))
+        if "comment" in rounds.columns:
+            values.append(_display_value(row.get("comment")))
+        table.add_row(*values)
     _console().print(table)
 
 
@@ -798,7 +887,7 @@ def _render_course_holes_table(course: str, hole_stats: pl.DataFrame) -> None:
         "penalty_rate",
     ]
     for column in columns:
-        justify = "right" if column != "hole_number" else "right"
+        justify: TableJustify = "right"
         table.add_column(column, justify=justify)
 
     for row in hole_stats.iter_rows(named=True):
@@ -843,7 +932,7 @@ def _render_trends_table(trends: pl.DataFrame, *, window: int) -> None:
         "delta_penalties_per_18",
     ]
     for column in columns:
-        justify = "left" if column in {"played_on", "course_name"} else "right"
+        justify: TableJustify = "left" if column in {"played_on", "course_name"} else "right"
         table.add_column(column, justify=justify)
 
     for row in trends.iter_rows(named=True):
@@ -861,7 +950,7 @@ def _render_metric_trends_table(trends: pl.DataFrame, *, metric: str, window: in
         "delta_value",
     ]
     for column in columns:
-        justify = "left" if column in {"played_on", "course_name"} else "right"
+        justify: TableJustify = "left" if column in {"played_on", "course_name"} else "right"
         table.add_column(column, justify=justify)
 
     for row in trends.iter_rows(named=True):
@@ -893,7 +982,7 @@ def _render_round_clubs_table(title: str, clubs: pl.DataFrame) -> None:
     table = Table(title=f"{title}: Clubs")
     columns = ["club", "shots", "avg_distance_m", "shot_type_breakdown"]
     for column in columns:
-        justify = "right" if column in {"shots", "avg_distance_m"} else "left"
+        justify: TableJustify = "right" if column in {"shots", "avg_distance_m"} else "left"
         table.add_column(column, justify=justify)
 
     for row in clubs.iter_rows(named=True):
@@ -916,10 +1005,8 @@ def _render_club_inventory_table(club_inventory: pl.DataFrame) -> None:
         "chip_avg_m",
     ]
     for column in columns:
-        justify = (
-            "right"
-            if column in {"club_id", "shots"} or column.endswith("_avg_m")
-            else "left"
+        justify: TableJustify = (
+            "right" if column in {"club_id", "shots"} or column.endswith("_avg_m") else "left"
         )
         table.add_column(
             column,
@@ -946,7 +1033,9 @@ def _render_club_context_table(context_stats: pl.DataFrame) -> None:
         "avg_to_par",
     ]
     for column in columns:
-        justify = "right" if column in {"shots", "rounds", "avg_distance_m"} else "left"
+        justify: TableJustify = (
+            "right" if column in {"shots", "rounds", "avg_distance_m"} else "left"
+        )
         table.add_column(column, justify=justify)
 
     for row in context_stats.iter_rows(named=True):
@@ -965,8 +1054,8 @@ def _render_putting_table(putting_stats: pl.DataFrame) -> None:
         "three_putt_plus_pct",
     ]
     for column in columns:
-        justify = "right" if column != "distance_bucket" else "left"
-        table.add_column(column, justify=justify)
+        justify: TableJustify = "right" if column != "distance_bucket" else "left"
+        table.add_column(column, justify=justify, min_width=len(column), no_wrap=True)
 
     for row in putting_stats.iter_rows(named=True):
         table.add_row(*[_display_value(row.get(column)) for column in columns])
@@ -1069,9 +1158,8 @@ def _build_club_inventory_table(
     result = defaults.join(configured, on="club_id", how="left")
     if not by_type_summary.is_empty():
         result = result.join(by_type_summary, on="club_id", how="left")
-    return (
-        result.with_columns(pl.col("configured_name").fill_null(pl.col("default_name")))
-        .sort(["shots", "club_id"], descending=[True, False], nulls_last=True)
+    return result.with_columns(pl.col("configured_name").fill_null(pl.col("default_name"))).sort(
+        ["shots", "club_id"], descending=[True, False], nulls_last=True
     )
 
 
@@ -1174,9 +1262,7 @@ def _build_round_clubs_table(shots: pl.DataFrame) -> pl.DataFrame:
         rows.append({"club": club_name, "shot_type_breakdown": ", ".join(parts)})
     type_summary = pl.DataFrame(rows) if rows else pl.DataFrame()
     result = (
-        clubs.join(type_summary, on="club", how="left")
-        if not type_summary.is_empty()
-        else clubs
+        clubs.join(type_summary, on="club", how="left") if not type_summary.is_empty() else clubs
     )
     return result.sort(["shots", "club"], descending=[True, False], nulls_last=True)
 
@@ -1249,9 +1335,7 @@ def _prepare_rounds_for_display(rounds: pl.DataFrame) -> pl.DataFrame:
     frame = rounds.with_columns(
         [
             (
-                pl.when(
-                    pl.col("course_name").cast(pl.String, strict=False).str.strip_chars() != ""
-                )
+                pl.when(pl.col("course_name").cast(pl.String, strict=False).str.strip_chars() != "")
                 .then(pl.col("course_name"))
                 .otherwise(pl.col("location_name"))
                 .cast(pl.String, strict=False)
@@ -1281,17 +1365,20 @@ def _prepare_rounds_for_display(rounds: pl.DataFrame) -> pl.DataFrame:
             ),
         ]
     )
+    columns = [
+        pl.col("round_id") if "round_id" in frame.columns else pl.lit(None).alias("round_id"),
+        pl.col("played_on") if "played_on" in frame.columns else pl.lit("").alias("played_on"),
+        pl.col("display_course_name"),
+    ]
+    if "exclude_from_stats" in frame.columns:
+        columns.append(pl.col("exclude_from_stats").fill_null(False).alias("exclude_from_stats"))
+    if "comment" in frame.columns:
+        columns.append(pl.col("comment"))
     return frame.sort(
         by=["_played_on_date", "_round_id_sort"],
         descending=[True, True],
         nulls_last=True,
-    ).select(
-        [
-            pl.col("round_id") if "round_id" in frame.columns else pl.lit(None).alias("round_id"),
-            pl.col("played_on") if "played_on" in frame.columns else pl.lit("").alias("played_on"),
-            pl.col("display_course_name"),
-        ]
-    )
+    ).select(columns)
 
 
 def _load_canonical_rounds(
@@ -1299,6 +1386,7 @@ def _load_canonical_rounds(
     date_from: str | None,
     date_to: str | None,
     period: str | None,
+    include_excluded: bool = False,
 ) -> pl.DataFrame:
     storage = _storage()
     rounds = storage.read_table("rounds")
@@ -1315,6 +1403,7 @@ def _load_canonical_rounds(
         pl.DataFrame(),
         date_from=resolved_from,
         date_to=resolved_to,
+        include_excluded=include_excluded,
     )
     canonical_rounds, _ = _canonicalize_rounds(filtered_rounds)
     if canonical_rounds.is_empty():
@@ -1337,11 +1426,14 @@ def _filter_club_stats_tables(
     if course is not None:
         canonical_rounds = _load_canonical_rounds(date_from=None, date_to=None, period=None)
         if canonical_rounds.is_empty():
-            raise typer.BadParameter("No courses are available yet. Run `garmin-golf stats courses` first.")
+            raise typer.BadParameter(
+                "No courses are available yet. Run `garmin-golf stats courses` first."
+            )
         target_rounds = canonical_rounds.filter(pl.col("display_course_name") == course)
         if target_rounds.is_empty():
             raise typer.BadParameter(
-                f"Course not found: {course}. Use `garmin-golf stats courses` to inspect available names."
+                f"Course not found: {course}. "
+                "Use `garmin-golf stats courses` to inspect available names."
             )
         round_ids = target_rounds["round_id"].drop_nulls().to_list()
         filtered_raw_shots = _filter_round_table(filtered_raw_shots, round_ids)
@@ -1527,9 +1619,7 @@ def _parse_optional_date(value: str | None, option_name: str) -> date | None:
     try:
         return date.fromisoformat(value)
     except ValueError as exc:
-        raise typer.BadParameter(
-            f"{option_name} must be an ISO date like 2025-06-01."
-        ) from exc
+        raise typer.BadParameter(f"{option_name} must be an ISO date like 2025-06-01.") from exc
 
 
 def _resolve_date_window(
@@ -1578,8 +1668,9 @@ def _filter_stats_tables(
     *,
     date_from: date | None,
     date_to: date | None,
+    include_excluded: bool = False,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-    if rounds.is_empty() or (date_from is None and date_to is None):
+    if rounds.is_empty():
         return rounds, holes, shots
 
     filtered_rounds = rounds
@@ -1592,6 +1683,10 @@ def _filter_stats_tables(
         if date_to is not None:
             filtered_rounds = filtered_rounds.filter(pl.col("_played_on_date") <= pl.lit(date_to))
         filtered_rounds = filtered_rounds.drop("_played_on_date")
+    if not include_excluded and "exclude_from_stats" in filtered_rounds.columns:
+        filtered_rounds = filtered_rounds.filter(
+            ~pl.col("exclude_from_stats").cast(pl.Boolean, strict=False).fill_null(False)
+        )
 
     if filtered_rounds.is_empty() or "round_id" not in filtered_rounds.columns:
         return filtered_rounds, holes.clear(), shots.clear()
@@ -1604,6 +1699,7 @@ def _filter_stats_tables(
         shots.filter(pl.col("round_id").is_in(round_ids)) if not shots.is_empty() else shots
     )
     return filtered_rounds, filtered_holes, filtered_shots
+
 
 def main() -> None:
     app()

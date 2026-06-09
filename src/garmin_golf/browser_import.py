@@ -73,7 +73,12 @@ def import_browser_export_payload(
             for hole_number in range(1, 19):
                 shot_rows.extend(normalize_shots(scorecard_id, hole_number, shot_payload))
 
-    storage.upsert_rows("rounds", round_rows, unique_by=["round_id"])
+    storage.upsert_rows(
+        "rounds",
+        round_rows,
+        unique_by=["round_id"],
+        preserve_columns=["exclude_from_stats", "comment"],
+    )
     storage.upsert_rows("holes", hole_rows, unique_by=["round_id", "hole_number"])
     storage.upsert_rows("shots", shot_rows, unique_by=["round_id", "hole_number", "shot_number"])
     if snapshot_relative_path is not None:

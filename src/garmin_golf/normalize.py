@@ -6,7 +6,6 @@ from typing import Any
 
 from .models import JsonDict
 
-
 CLUB_TYPE_NAMES: dict[int, str] = {
     1: "Driver",
     2: "3 Wood",
@@ -67,6 +66,8 @@ def normalize_round(summary: JsonDict, detail: JsonDict) -> dict[str, Any]:
         "tee_name": tee_name,
         "total_score": total_score,
         "total_par": total_par,
+        "exclude_from_stats": False,
+        "comment": None,
         "strokes_gained_handicap": scorecard.get("strokesGainedHandicap"),
         "player_profile_id": scorecard.get("playerProfileId", summary.get("playerProfileId")),
         "summary_json": _json_dumps(summary),
@@ -149,6 +150,7 @@ def normalize_shots(round_id: int, hole_number: int, payload: JsonDict) -> list[
     for index, shot in enumerate(shots, start=1):
         if not isinstance(shot, dict):
             continue
+        club_id = _coalesce_int(shot.get("clubId"))
         rows.append(
             {
                 "round_id": round_id,
@@ -161,9 +163,9 @@ def normalize_shots(round_id: int, hole_number: int, payload: JsonDict) -> list[
                 "club": _coalesce_str(
                     shot.get("club"),
                     _nested_get(shot, "club", "name"),
-                    club_lookup.get(_coalesce_int(shot.get("clubId"))),
+                    club_lookup.get(club_id) if club_id is not None else None,
                 ),
-                "club_id": _coalesce_int(shot.get("clubId")),
+                "club_id": club_id,
                 "distance_meters": _coalesce_float(
                     shot.get("meters"),
                     shot.get("distance"),

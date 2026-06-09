@@ -83,9 +83,7 @@ def build_summary_stats(
     rounds_18_hole = _count_rounds_with_holes(round_counts, 18)
     rounds_9_hole = _count_rounds_with_holes(round_counts, 9)
     rounds_other_hole_count = (
-        round_counts.height - rounds_18_hole - rounds_9_hole
-        if not round_counts.is_empty()
-        else 0
+        round_counts.height - rounds_18_hole - rounds_9_hole if not round_counts.is_empty() else 0
     )
 
     average_score = _mean_round_equivalent(rounds, round_counts, "total_score")
@@ -110,9 +108,7 @@ def build_summary_stats(
     bogey_or_worse_pct = _score_bucket_pct(scoring_frame, "bogey_or_worse")
     bogeys_or_worse_per_18 = _score_bucket_per_18(scoring_frame, "bogey_or_worse")
     double_bogey_or_worse_pct = _score_bucket_pct(scoring_frame, "double_bogey_or_worse")
-    double_bogeys_or_worse_per_18 = _score_bucket_per_18(
-        scoring_frame, "double_bogey_or_worse"
-    )
+    double_bogeys_or_worse_per_18 = _score_bucket_per_18(scoring_frame, "double_bogey_or_worse")
     three_putt_pct = _threshold_pct(holes, "putts", 3)
     three_putts_per_18 = _threshold_successes_per_18(holes, "putts", 3)
     penalty_hole_pct = _threshold_pct(holes, "penalties", 1)
@@ -551,8 +547,9 @@ def build_second_shot_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.Data
 
     trimmed_joined = trim_distance_outliers(joined, group_columns=["par", "club"])
     distance_summary = (
-        trimmed_joined.group_by(["par", "club"])
-        .agg(pl.col("distance_meters").mean().alias("avg_distance_m"))
+        trimmed_joined.group_by(["par", "club"]).agg(
+            pl.col("distance_meters").mean().alias("avg_distance_m")
+        )
         if not trimmed_joined.is_empty()
         else pl.DataFrame(schema={"par": pl.Int64, "club": pl.String, "avg_distance_m": pl.Float64})
     )
@@ -713,8 +710,9 @@ def build_club_context_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.Dat
 
     trimmed = trim_distance_outliers(joined, group_columns=["club", "context"])
     distance_summary = (
-        trimmed.group_by(["club", "context"])
-        .agg(pl.col("distance_meters").mean().alias("avg_distance_m"))
+        trimmed.group_by(["club", "context"]).agg(
+            pl.col("distance_meters").mean().alias("avg_distance_m")
+        )
         if not trimmed.is_empty()
         else pl.DataFrame(
             schema={
@@ -827,14 +825,7 @@ def _club_context_expr() -> pl.Expr:
 
 
 def _format_mode_expr(column: str) -> pl.Expr:
-    return (
-        pl.col(column)
-        .drop_nulls()
-        .mode()
-        .first()
-        .fill_null("Unknown")
-        .alias(column)
-    )
+    return pl.col(column).drop_nulls().mode().first().fill_null("Unknown").alias(column)
 
 
 def _sort_rounds_for_trends(rounds: pl.DataFrame) -> pl.DataFrame:
@@ -1013,8 +1004,10 @@ def _scrambles_per_18(frame: pl.DataFrame) -> float:
     candidates = frame.drop_nulls(["gir"]).filter(~pl.col("gir"))
     if candidates.is_empty():
         return 0.0
-    successes = candidates.filter(pl.col("to_par") <= 0).group_by("round_id").agg(
-        pl.len().alias("successes")
+    successes = (
+        candidates.filter(pl.col("to_par") <= 0)
+        .group_by("round_id")
+        .agg(pl.len().alias("successes"))
     )
     hole_counts = _round_hole_counts(frame)
     return _per_round_metric_18_equivalent(successes, hole_counts, "successes")
@@ -1120,8 +1113,10 @@ def _threshold_successes_per_18(frame: pl.DataFrame, column: str, threshold: int
     ).drop_nulls(["_metric_value"])
     if valid.is_empty():
         return 0.0
-    grouped = valid.filter(pl.col("_metric_value") >= threshold).group_by("round_id").agg(
-        pl.len().alias("successes")
+    grouped = (
+        valid.filter(pl.col("_metric_value") >= threshold)
+        .group_by("round_id")
+        .agg(pl.len().alias("successes"))
     )
     hole_counts = _round_hole_counts(frame)
     return _per_round_metric_18_equivalent(grouped, hole_counts, "successes")
@@ -1273,8 +1268,7 @@ def _format_count_breakdown(frame: pl.DataFrame, column: str, *, limit: int | No
     if frame.is_empty() or column not in frame.columns:
         return ""
     counts = (
-        frame
-        .drop_nulls(column)
+        frame.drop_nulls(column)
         .group_by(column)
         .len()
         .sort(["len", column], descending=[True, False])

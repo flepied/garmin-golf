@@ -125,6 +125,81 @@ def test_stats_summary_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) ->
     assert "Golf Summary" not in result.stdout
 
 
+def test_stats_summary_excludes_annotated_rounds_but_single_round_keeps_them(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [
+            {
+                "round_id": 1,
+                "played_on": "2025-06-01",
+                "total_score": 82,
+                "total_par": 72,
+                "exclude_from_stats": False,
+            },
+            {
+                "round_id": 2,
+                "played_on": "2025-06-08",
+                "total_score": 100,
+                "total_par": 72,
+                "exclude_from_stats": True,
+                "comment": "match play",
+            },
+        ],
+        unique_by=["round_id"],
+    )
+
+    runner = CliRunner()
+    summary_result = runner.invoke(app, ["stats", "summary", "--json"])
+    round_result = runner.invoke(app, ["stats", "round", "--round-id", "2", "--json"])
+
+    assert summary_result.exit_code == 0
+    assert round_result.exit_code == 0
+    summary = json.loads(summary_result.stdout)
+    round_payload = json.loads(round_result.stdout)
+    assert summary["rounds_played"] == 1
+    assert round_payload["summary"]["round_id"] == 2
+    assert round_payload["summary"]["exclude_from_stats"] is True
+    assert round_payload["summary"]["comment"] == "match play"
+
+
+def test_stats_annotate_round_command_sets_exclusion_and_comment(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [{"round_id": 1, "played_on": "2025-06-01", "course_name": "Blue Hills"}],
+        unique_by=["round_id"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "stats",
+            "annotate-round",
+            "--round-id",
+            "1",
+            "--exclude-from-stats",
+            "--comment",
+            "windy",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload == {"round_id": 1, "exclude_from_stats": True, "comment": "windy"}
+    row = storage.read_table("rounds").row(0, named=True)
+    assert row["exclude_from_stats"] is True
+    assert row["comment"] == "windy"
+
+
 def test_stats_practice_focus_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
     storage = Storage(Settings())
@@ -202,9 +277,7 @@ def test_stats_trends_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> 
                 "gir": round_id == 3 or (round_id == 2 and hole <= 9),
                 "fairway_hit": round_id == 3 or (round_id == 2 and hole <= 9),
                 "penalties": (
-                    1
-                    if (round_id == 1 and hole <= 2) or (round_id == 2 and hole == 1)
-                    else 0
+                    1 if (round_id == 1 and hole <= 2) or (round_id == 2 and hole == 1) else 0
                 ),
             }
             for round_id in (1, 2, 3)
@@ -317,9 +390,7 @@ def test_stats_trends_command_metric_json(monkeypatch: MonkeyPatch, tmp_path: Pa
                 "gir": round_id == 3 or (round_id == 2 and hole <= 9),
                 "fairway_hit": round_id == 3 or (round_id == 2 and hole <= 9),
                 "penalties": (
-                    1
-                    if (round_id == 1 and hole <= 2) or (round_id == 2 and hole == 1)
-                    else 0
+                    1 if (round_id == 1 and hole <= 2) or (round_id == 2 and hole == 1) else 0
                 ),
             }
             for round_id in (1, 2, 3)
@@ -601,9 +672,7 @@ def test_stats_clubs_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> N
     assert payload[0]["default_name"] == "Lob Wedge"
 
 
-def test_stats_clubs_command_by_context_json(
-    monkeypatch: MonkeyPatch, tmp_path: Path
-) -> None:
+def test_stats_clubs_command_by_context_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
     storage = Storage(Settings())
     storage.upsert_rows(
@@ -651,9 +720,7 @@ def test_stats_clubs_command_by_context_json(
     assert {row["context"] for row in payload} == {"tee_par_3", "tee_par_4"}
 
 
-def test_stats_clubs_command_filters_by_course(
-    monkeypatch: MonkeyPatch, tmp_path: Path
-) -> None:
+def test_stats_clubs_command_filters_by_course(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
     storage = Storage(Settings())
     storage.upsert_rows(
@@ -1015,9 +1082,7 @@ def test_stats_rounds_command_with_date_range(monkeypatch: MonkeyPatch, tmp_path
     assert "Red Oaks" not in result.stdout
 
 
-def test_stats_rounds_command_with_period_filter(
-    monkeypatch: MonkeyPatch, tmp_path: Path
-) -> None:
+def test_stats_rounds_command_with_period_filter(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
     storage = Storage(Settings())
     storage.upsert_rows(

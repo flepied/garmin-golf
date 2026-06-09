@@ -54,6 +54,17 @@ uv run garmin-golf stats round --round-id 22068626916
 The round view includes the round summary, a hole-by-hole table, club usage for that round, and a
 second-shot breakdown for par 4s and par 5s when shot data is available.
 
+To mark a round as local-only special context, annotate it:
+
+```bash
+uv run garmin-golf stats annotate-round --round-id 22068626916 --exclude-from-stats --comment "match play"
+uv run garmin-golf stats annotate-round --round-id 22068626916 --comment "windy"
+uv run garmin-golf stats annotate-round --round-id 22068626916 --include-in-stats --clear-comment
+```
+
+Rounds marked with `--exclude-from-stats` are skipped by aggregate multi-round stats, while
+`stats round --round-id ...` can still inspect them directly.
+
 To inspect rolling trends over your recent rounds:
 
 ```bash

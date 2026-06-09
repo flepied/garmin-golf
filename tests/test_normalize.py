@@ -73,7 +73,7 @@ def test_normalize_shots() -> None:
                     }
                 ],
             }
-        ]
+        ],
     }
 
     rows = normalize_shots(42, 1, payload)

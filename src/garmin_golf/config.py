@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     def parquet_dir(self) -> Path:
         return self.data_dir / self.parquet_dir_name
 
+
 def get_settings() -> Settings:
     return Settings()
 
@@ -75,9 +76,9 @@ def default_config_template() -> str:
         "# Garmin Golf configuration\n"
         "# Environment variables still override values in this file.\n\n"
         '# data_dir = "/home/you/garmin-golf-data"\n'
-        '\n# Optional club-name overrides keyed by Garmin club_id.\n'
-        '# Use this when Garmin club type inference does not match your actual bag.\n'
-        '# [club_name_overrides]\n'
+        "\n# Optional club-name overrides keyed by Garmin club_id.\n"
+        "# Use this when Garmin club type inference does not match your actual bag.\n"
+        "# [club_name_overrides]\n"
         '# "10400964" = "5 Wood"\n'
         '# "10400967" = "3 Hybrid"\n'
         '# "10400977" = "56 Wedge"\n'

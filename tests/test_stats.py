@@ -167,8 +167,7 @@ def test_build_summary_stats_with_9_and_18_hole_rounds() -> None:
         ]
     )
     shots = pl.DataFrame(
-        [{"round_id": 1, "shot_type": "TEE", "distance_meters": 200.0}]
-        * 9
+        [{"round_id": 1, "shot_type": "TEE", "distance_meters": 200.0}] * 9
         + [{"round_id": 2, "shot_type": "TEE", "distance_meters": 210.0}] * 18
     )
 
@@ -731,15 +730,15 @@ def test_build_second_shot_stats() -> None:
     stats = build_second_shot_stats(holes, shots)
 
     assert stats.height == 3
-    par4_three_wood = stats.filter(
-        (pl.col("par") == 4) & (pl.col("club") == "3 Wood")
-    ).row(0, named=True)
+    par4_three_wood = stats.filter((pl.col("par") == 4) & (pl.col("club") == "3 Wood")).row(
+        0, named=True
+    )
     assert par4_three_wood["second_shots"] == 1
     assert par4_three_wood["avg_distance_m"] == 195.0
     assert par4_three_wood["bogey_or_worse_pct"] == 100.0
-    par5_three_wood = stats.filter(
-        (pl.col("par") == 5) & (pl.col("club") == "3 Wood")
-    ).row(0, named=True)
+    par5_three_wood = stats.filter((pl.col("par") == 5) & (pl.col("club") == "3 Wood")).row(
+        0, named=True
+    )
     assert par5_three_wood["avg_to_par"] == 1.0
 
 
@@ -803,8 +802,8 @@ def test_build_second_shot_stats_trims_distance_outliers_only_for_distance_avera
 
     stats = build_second_shot_stats(holes, shots)
 
-    par4_three_wood = stats.filter(
-        (pl.col("par") == 4) & (pl.col("club") == "3 Wood")
-    ).row(0, named=True)
+    par4_three_wood = stats.filter((pl.col("par") == 4) & (pl.col("club") == "3 Wood")).row(
+        0, named=True
+    )
     assert par4_three_wood["second_shots"] == 6
     assert par4_three_wood["avg_distance_m"] == 152.0

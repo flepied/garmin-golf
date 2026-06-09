@@ -207,6 +207,33 @@ def test_mirror_scorecards_command_writes_exports_and_imports(
     assert shots.height == 1
 
 
+def test_browser_import_preserves_round_annotations(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path / "data"))
+    storage = Storage(Settings())
+    payload = build_browser_export_payload(
+        summary_payload={"scorecardSummaries": [_summary_row()]},
+        summary_row=_summary_row(),
+        detail_payload=_detail_payload(),
+        shot_payload=_shot_payload(),
+        source="garmin-connect-browser",
+    )
+
+    import_browser_export_payload(storage, payload)
+    storage.upsert_rows(
+        "rounds",
+        [{"round_id": 42, "exclude_from_stats": True, "comment": "competition"}],
+        unique_by=["round_id"],
+    )
+    import_browser_export_payload(storage, payload)
+
+    row = storage.read_table("rounds").row(0, named=True)
+    assert row["exclude_from_stats"] is True
+    assert row["comment"] == "competition"
+
+
 def test_mirror_scorecards_command_json(
     monkeypatch: MonkeyPatch,
     tmp_path: Path,
@@ -301,7 +328,7 @@ def test_wait_for_authenticated_listing() -> None:
 
     session = FakeSession()
     mirror._wait_for_authenticated_listing(
-        session,
+        session,  # type: ignore[arg-type]
         "https://connect.garmin.com/app/scorecards/flepied",
     )
 

@@ -507,6 +507,9 @@ def stats_second_shots(
 
 @stats_app.command("clubs")
 def stats_clubs(
+    date_from: str | None = DATE_FROM_OPTION,
+    date_to: str | None = DATE_TO_OPTION,
+    period: str | None = PERIOD_OPTION,
     by_context: bool = BY_CONTEXT_OPTION,
     course: str | None = COURSE_OPTION,
     hole: int | None = HOLE_OPTION,
@@ -515,11 +518,16 @@ def stats_clubs(
     """List observed club ids with inferred and configured names."""
 
     storage = _storage()
+    resolved_from, resolved_to = _resolve_date_window(
+        date_from=date_from,
+        date_to=date_to,
+        period=period,
+    )
     rounds = storage.read_table("rounds")
     raw_shots = _shots_with_normalized_shot_types(storage.read_table("shots"))
     included_rounds = _load_canonical_rounds(
-        date_from=None,
-        date_to=None,
+        date_from=resolved_from.isoformat() if resolved_from is not None else None,
+        date_to=resolved_to.isoformat() if resolved_to is not None else None,
         period=None,
     )
     if not rounds.is_empty() and included_rounds.is_empty():
@@ -542,6 +550,7 @@ def stats_clubs(
         holes=storage.read_table("holes"),
         course=course,
         hole=hole,
+        canonical_rounds=included_rounds,
     )
     if raw_shots.is_empty():
         if json_output:
@@ -980,9 +989,11 @@ def _render_round_holes_table(title: str, holes: pl.DataFrame) -> None:
 
 def _render_round_clubs_table(title: str, clubs: pl.DataFrame) -> None:
     table = Table(title=f"{title}: Clubs")
-    columns = ["club", "shots", "avg_distance_m", "shot_type_breakdown"]
+    columns = ["club", "shots", "avg_distance_m", "distance_stddev_m", "shot_type_breakdown"]
     for column in columns:
-        justify: TableJustify = "right" if column in {"shots", "avg_distance_m"} else "left"
+        justify: TableJustify = (
+            "right" if column in {"shots", "avg_distance_m", "distance_stddev_m"} else "left"
+        )
         table.add_column(column, justify=justify)
 
     for row in clubs.iter_rows(named=True):
@@ -998,6 +1009,7 @@ def _render_club_inventory_table(club_inventory: pl.DataFrame) -> None:
         "configured_name",
         "shots",
         "avg_distance_m",
+        "distance_stddev_m",
         "shot_type_breakdown",
         "tee_avg_m",
         "approach_avg_m",
@@ -1006,7 +1018,11 @@ def _render_club_inventory_table(club_inventory: pl.DataFrame) -> None:
     ]
     for column in columns:
         justify: TableJustify = (
-            "right" if column in {"club_id", "shots"} or column.endswith("_avg_m") else "left"
+            "right"
+            if column in {"club_id", "shots"}
+            or column.endswith("_avg_m")
+            or column.endswith("_stddev_m")
+            else "left"
         )
         table.add_column(
             column,
@@ -1028,13 +1044,16 @@ def _render_club_context_table(context_stats: pl.DataFrame) -> None:
         "shot_type",
         "lie",
         "avg_distance_m",
+        "distance_stddev_m",
         "par_or_better_pct",
         "bogey_or_worse_pct",
         "avg_to_par",
     ]
     for column in columns:
         justify: TableJustify = (
-            "right" if column in {"shots", "rounds", "avg_distance_m"} else "left"
+            "right"
+            if column in {"shots", "rounds", "avg_distance_m", "distance_stddev_m"}
+            else "left"
         )
         table.add_column(column, justify=justify)
 
@@ -1093,7 +1112,12 @@ def _build_club_inventory_table(
                 .cast(pl.Float64, strict=False)
                 .mean()
                 .round(1)
-                .alias("avg_distance_m")
+                .alias("avg_distance_m"),
+                pl.col("distance_meters")
+                .cast(pl.Float64, strict=False)
+                .std(ddof=1)
+                .round(1)
+                .alias("distance_stddev_m"),
             ),
             on="club_id",
             how="left",
@@ -1123,7 +1147,12 @@ def _build_club_inventory_table(
                     .cast(pl.Float64, strict=False)
                     .mean()
                     .round(1)
-                    .alias("avg_distance_m")
+                    .alias("avg_distance_m"),
+                    pl.col("distance_meters")
+                    .cast(pl.Float64, strict=False)
+                    .std(ddof=1)
+                    .round(1)
+                    .alias("distance_stddev_m"),
                 ),
                 on=["club_id", "shot_type"],
                 how="left",
@@ -1142,14 +1171,23 @@ def _build_club_inventory_table(
                 for row in rows
                 if isinstance(row.get("shot_type"), str)
             }
+            distance_stddev_by_type = {
+                f"{row.get('shot_type')}_STDDEV": row.get("distance_stddev_m")
+                for row in rows
+                if isinstance(row.get("shot_type"), str)
+            }
             by_type_rows.append(
                 {
                     "club_id": club_id[0] if isinstance(club_id, tuple) else club_id,
                     "shot_type_breakdown": breakdown,
                     "tee_avg_m": distance_by_type.get("TEE"),
+                    "tee_distance_stddev_m": distance_stddev_by_type.get("TEE_STDDEV"),
                     "approach_avg_m": distance_by_type.get("APPROACH"),
+                    "approach_distance_stddev_m": distance_stddev_by_type.get("APPROACH_STDDEV"),
                     "layup_avg_m": distance_by_type.get("LAYUP"),
+                    "layup_distance_stddev_m": distance_stddev_by_type.get("LAYUP_STDDEV"),
                     "chip_avg_m": distance_by_type.get("CHIP"),
+                    "chip_distance_stddev_m": distance_stddev_by_type.get("CHIP_STDDEV"),
                 }
             )
         by_type_summary = pl.DataFrame(by_type_rows)
@@ -1242,7 +1280,12 @@ def _build_round_clubs_table(shots: pl.DataFrame) -> pl.DataFrame:
                 .cast(pl.Float64, strict=False)
                 .mean()
                 .round(1)
-                .alias("avg_distance_m")
+                .alias("avg_distance_m"),
+                pl.col("distance_meters")
+                .cast(pl.Float64, strict=False)
+                .std(ddof=1)
+                .round(1)
+                .alias("distance_stddev_m"),
             ),
             on="club",
             how="left",
@@ -1418,13 +1461,13 @@ def _filter_club_stats_tables(
     holes: pl.DataFrame,
     course: str | None,
     hole: int | None,
+    canonical_rounds: pl.DataFrame,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     filtered_raw_shots = raw_shots
     filtered_resolved_shots = resolved_shots
     filtered_holes = holes
 
     if course is not None:
-        canonical_rounds = _load_canonical_rounds(date_from=None, date_to=None, period=None)
         if canonical_rounds.is_empty():
             raise typer.BadParameter(
                 "No courses are available yet. Run `garmin-golf stats courses` first."

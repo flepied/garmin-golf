@@ -807,3 +807,4 @@ def test_build_second_shot_stats_trims_distance_outliers_only_for_distance_avera
     )
     assert par4_three_wood["second_shots"] == 6
     assert par4_three_wood["avg_distance_m"] == 152.0
+    assert par4_three_wood["distance_stddev_m"] == 1.6

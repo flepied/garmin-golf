@@ -548,10 +548,20 @@ def build_second_shot_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.Data
     trimmed_joined = trim_distance_outliers(joined, group_columns=["par", "club"])
     distance_summary = (
         trimmed_joined.group_by(["par", "club"]).agg(
-            pl.col("distance_meters").mean().alias("avg_distance_m")
+            [
+                pl.col("distance_meters").mean().alias("avg_distance_m"),
+                pl.col("distance_meters").std(ddof=1).alias("distance_stddev_m"),
+            ]
         )
         if not trimmed_joined.is_empty()
-        else pl.DataFrame(schema={"par": pl.Int64, "club": pl.String, "avg_distance_m": pl.Float64})
+        else pl.DataFrame(
+            schema={
+                "par": pl.Int64,
+                "club": pl.String,
+                "avg_distance_m": pl.Float64,
+                "distance_stddev_m": pl.Float64,
+            }
+        )
     )
 
     return (
@@ -575,6 +585,7 @@ def build_second_shot_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.Data
         .with_columns(
             [
                 pl.col("avg_distance_m").round(1),
+                pl.col("distance_stddev_m").round(1),
                 pl.col("par_or_better_pct").round(2),
                 pl.col("bogey_or_worse_pct").round(2),
                 pl.col("double_or_worse_pct").round(2),
@@ -711,7 +722,10 @@ def build_club_context_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.Dat
     trimmed = trim_distance_outliers(joined, group_columns=["club", "context"])
     distance_summary = (
         trimmed.group_by(["club", "context"]).agg(
-            pl.col("distance_meters").mean().alias("avg_distance_m")
+            [
+                pl.col("distance_meters").mean().alias("avg_distance_m"),
+                pl.col("distance_meters").std(ddof=1).alias("distance_stddev_m"),
+            ]
         )
         if not trimmed.is_empty()
         else pl.DataFrame(
@@ -719,6 +733,7 @@ def build_club_context_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.Dat
                 "club": pl.String,
                 "context": pl.String,
                 "avg_distance_m": pl.Float64,
+                "distance_stddev_m": pl.Float64,
             }
         )
     )
@@ -746,6 +761,7 @@ def build_club_context_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.Dat
         .with_columns(
             [
                 pl.col("avg_distance_m").round(1),
+                pl.col("distance_stddev_m").round(1),
                 pl.col("par_or_better_pct").round(2),
                 pl.col("bogey_or_worse_pct").round(2),
                 pl.col("double_or_worse_pct").round(2),

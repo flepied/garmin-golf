@@ -749,6 +749,40 @@ def test_stats_clubs_command_filters_by_course(monkeypatch: MonkeyPatch, tmp_pat
     assert payload[0]["default_name"] == "Driver"
 
 
+def test_stats_clubs_command_filters_by_date_range(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [
+            {"round_id": 1, "played_on": "2025-06-01", "course_name": "Course A"},
+            {"round_id": 2, "played_on": "2025-07-01", "course_name": "Course A"},
+        ],
+        unique_by=["round_id"],
+    )
+    storage.upsert_rows(
+        "shots",
+        [
+            {"round_id": 1, "hole_number": 1, "shot_number": 1, "club_id": 1, "club": "Driver"},
+            {"round_id": 2, "hole_number": 1, "shot_number": 1, "club_id": 2, "club": "3 Wood"},
+        ],
+        unique_by=["round_id", "hole_number", "shot_number"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["stats", "clubs", "--from", "2025-06-15", "--to", "2025-07-15", "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert len(payload) == 1
+    assert payload[0]["default_name"] == "3 Wood"
+
+
 def test_stats_clubs_command_filters_by_course_and_hole(
     monkeypatch: MonkeyPatch, tmp_path: Path
 ) -> None:

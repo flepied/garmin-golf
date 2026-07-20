@@ -97,13 +97,15 @@ Use `stats annotate-round` to set local round metadata. `--exclude-from-stats` r
 uv run garmin-golf stats second-shots --json
 uv run garmin-golf stats second-shots --period last-12-months --json
 uv run garmin-golf stats clubs --json
+uv run garmin-golf stats clubs --period last-12-months --json
+uv run garmin-golf stats clubs --from 2025-01-01 --to 2025-12-31 --json
 uv run garmin-golf stats clubs --by-context --json
 uv run garmin-golf stats clubs --course "Golf National ~ Aigle" --json
 uv run garmin-golf stats clubs --course "Golf National ~ Aigle" --hole 7 --by-context --json
 ```
 
 Use `stats second-shots` when the user wants club usage and outcomes on second shots for par 4s and par 5s.
-Use `stats clubs` when club labels look suspicious or need bag-specific overrides; it exposes observed `club_id` values, inferred names, configured names, counts, and average distances.
+Use `stats clubs` when club labels look suspicious or need bag-specific overrides; it exposes observed `club_id` values, inferred names, configured names, counts, average distances, and distance dispersion (`distance_stddev_m`) based on the same outlier-trimmed samples.
 Use `stats clubs --by-context` when the user wants club performance split by contexts such as par-3 tee shots, par-4 tee shots, par-4 approaches, par-5 second shots, short game, recovery, and putting.
 Add `--course` when the user wants club usage only on one course across all recorded rounds there. Add `--hole` to narrow further to one specific hole, optionally combined with `--by-context`.
 

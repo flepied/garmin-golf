@@ -65,9 +65,25 @@ uv run garmin-golf stats putting --json
 uv run garmin-golf stats putting --period last-12-months --json
 ```
 
-Use `stats putting` when the user wants putting performance broken down like the
-distance-based views. It groups holes by first-putt starting distance bucket and
-reports hole counts plus one-putt, two-putt, and three-putt-or-worse rates.
+Use `stats putting` when the user wants putting performance broken down by
+distance. It groups holes by first-putt starting distance bucket and reports
+hole counts plus one-putt, two-putt, and three-putt-or-worse rates.
+
+`stats round --round-id ...` does not include this distance-bucket table. It does
+report the selected round's `average_putt_distance_m`, and its shot breakdown
+includes the recorded putts. To inspect the distance buckets for one round,
+first get that round's `played_on` date from `stats rounds --json`, then use a
+date range containing only that date:
+
+```bash
+uv run garmin-golf stats putting --from YYYY-MM-DD --to YYYY-MM-DD --json
+```
+
+If there are multiple rounds on the same date, the date-filtered result combines
+them; explain that limitation rather than claiming the round has no
+putting-distance data. An empty `stats putting` result means no usable first-putt
+distance data was available for the selected date range—it does not contradict
+an `average_putt_distance_m` value shown by `stats round`.
 
 ### Practice priorities
 

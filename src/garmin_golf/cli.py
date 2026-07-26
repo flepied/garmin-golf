@@ -849,6 +849,7 @@ def stats_round(round_id: int = ROUND_ID_REQUIRED_OPTION, json_output: bool = JS
 
     hole_table = _build_round_holes_table(holes)
     club_table = _build_round_clubs_table(shots)
+    shot_table = _build_round_shots_table(shots)
     second_shots = build_second_shot_stats(holes, shots)
     if json_output:
         _emit_json(
@@ -856,6 +857,7 @@ def stats_round(round_id: int = ROUND_ID_REQUIRED_OPTION, json_output: bool = JS
                 "summary": summary,
                 "holes": hole_table,
                 "clubs": club_table,
+                "shots": shot_table,
                 "second_shots": second_shots,
             }
         )
@@ -867,6 +869,9 @@ def stats_round(round_id: int = ROUND_ID_REQUIRED_OPTION, json_output: bool = JS
 
     if not club_table.is_empty():
         _render_round_clubs_table(round_title, club_table)
+
+    if not shot_table.is_empty():
+        _render_round_shots_table(round_title, shot_table)
 
     if not second_shots.is_empty():
         _render_second_shots_table(second_shots, title=f"{round_title}: Second Shots")
@@ -1074,6 +1079,28 @@ def _render_round_clubs_table(title: str, clubs: pl.DataFrame) -> None:
         table.add_column(column, justify=justify)
 
     for row in clubs.iter_rows(named=True):
+        table.add_row(*[_display_value(row.get(column)) for column in columns])
+    _console().print(table)
+
+
+def _render_round_shots_table(title: str, shots: pl.DataFrame) -> None:
+    table = Table(title=f"{title}: Shots")
+    columns = [
+        "hole_number",
+        "shot_number",
+        "club",
+        "distance_meters",
+        "shot_type",
+        "lie",
+        "result",
+    ]
+    for column in columns:
+        table.add_column(
+            column,
+            justify="left" if column in {"club", "shot_type", "lie", "result"} else "right",
+        )
+
+    for row in shots.iter_rows(named=True):
         table.add_row(*[_display_value(row.get(column)) for column in columns])
     _console().print(table)
 
@@ -1333,6 +1360,37 @@ def _build_round_holes_table(holes: pl.DataFrame) -> pl.DataFrame:
     return frame.select(
         ["hole_number", "par", "strokes", "to_par", "putts", "gir", "fairway_hit", "penalties"]
     ).sort("hole_number")
+
+
+def _build_round_shots_table(shots: pl.DataFrame) -> pl.DataFrame:
+    """Return the recorded shot sequence for one round in play order."""
+
+    if shots.is_empty():
+        return pl.DataFrame()
+
+    columns: list[pl.Expr] = []
+    for name, dtype, fallback in [
+        ("hole_number", pl.Int64, None),
+        ("shot_number", pl.Int64, None),
+        ("club", pl.String, "Unknown"),
+        ("distance_meters", pl.Float64, None),
+        ("shot_type", pl.String, "UNKNOWN"),
+        ("lie", pl.String, None),
+        ("result", pl.String, None),
+    ]:
+        if name in shots.columns:
+            expression = pl.col(name).cast(dtype, strict=False)
+            if fallback is not None:
+                expression = expression.fill_null(fallback)
+        else:
+            expression = pl.lit(fallback, dtype=dtype)
+        columns.append(expression.alias(name))
+
+    return (
+        shots.select(columns)
+        .with_columns(pl.col("distance_meters").round(1))
+        .sort(["hole_number", "shot_number"], nulls_last=True)
+    )
 
 
 def _build_round_clubs_table(shots: pl.DataFrame) -> pl.DataFrame:

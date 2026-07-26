@@ -1640,10 +1640,30 @@ def test_stats_round_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> N
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert set(payload) == {"summary", "holes", "clubs", "second_shots"}
+    assert set(payload) == {"summary", "holes", "clubs", "shots", "second_shots"}
     assert payload["summary"]["round_id"] == 1001
     assert payload["holes"][0]["hole_number"] == 1
     assert {row["club"] for row in payload["clubs"]} == {"Driver", "8 Iron"}
+    assert payload["shots"] == [
+        {
+            "hole_number": 1,
+            "shot_number": 1,
+            "club": "Driver",
+            "distance_meters": 200.0,
+            "shot_type": "TEE",
+            "lie": None,
+            "result": None,
+        },
+        {
+            "hole_number": 1,
+            "shot_number": 2,
+            "club": "8 Iron",
+            "distance_meters": 135.0,
+            "shot_type": "APPROACH",
+            "lie": None,
+            "result": None,
+        },
+    ]
 
 
 def test_stats_round_command_shows_holes_clubs_and_second_shots(

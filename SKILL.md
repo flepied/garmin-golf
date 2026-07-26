@@ -180,7 +180,7 @@ uv run garmin-golf stats round --round-id 22068626916 --json
 uv run garmin-golf stats annotate-round --round-id 22068626916 --exclude-from-stats --comment "match play"
 ```
 
-Run `stats rounds` first when the user does not know the round id. `stats round` now returns the round summary, a hole-by-hole table, round club usage, and par-4/par-5 second-shot breakdowns when shot data is available.
+Run `stats rounds` first when the user does not know the round id. `stats round --json` returns the round summary, a hole-by-hole table, round club usage, the recorded shot sequence (`shots`) with club and distance on every hole, and par-4/par-5 second-shot breakdowns when shot data is available.
 Use `stats annotate-round` to set local round metadata. `--exclude-from-stats` removes the round from aggregate multi-round stats, `--include-in-stats` restores it, `--comment` sets a freeform note, and `--clear-comment` removes the note. Single-round `stats round` remains available for excluded rounds.
 
 ### Shot and club analysis

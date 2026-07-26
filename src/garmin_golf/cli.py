@@ -25,6 +25,7 @@ from .stats import (
     build_round_trends,
     build_second_shot_stats,
     build_summary_stats,
+    build_tee_shot_stats,
     trim_distance_outliers,
 )
 from .storage import Storage
@@ -505,6 +506,51 @@ def stats_second_shots(
     _render_second_shots_table(second_shots)
 
 
+@stats_app.command("tee-shots")
+def stats_tee_shots(
+    date_from: str | None = DATE_FROM_OPTION,
+    date_to: str | None = DATE_TO_OPTION,
+    period: str | None = PERIOD_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Show first-shot clubs, fairway results, and resulting hole outcomes."""
+
+    storage = _storage()
+    rounds = storage.read_table("rounds")
+    if rounds.is_empty():
+        if json_output:
+            _emit_json([])
+            return
+        _console().print("No local rounds found. Run `garmin-golf mirror scorecards ...` first.")
+        return
+
+    resolved_from, resolved_to = _resolve_date_window(
+        date_from=date_from,
+        date_to=date_to,
+        period=period,
+    )
+    holes = storage.read_table("holes")
+    shots = _shots_with_configured_club_names(storage.read_table("shots"))
+    _, filtered_holes, filtered_shots = _filter_stats_tables(
+        rounds,
+        holes,
+        shots,
+        date_from=resolved_from,
+        date_to=resolved_to,
+    )
+    tee_shots = build_tee_shot_stats(filtered_holes, filtered_shots)
+    if tee_shots.is_empty():
+        if json_output:
+            _emit_json([])
+            return
+        _console().print("No first-shot data is available for this selection.")
+        return
+    if json_output:
+        _emit_json(tee_shots)
+        return
+    _render_tee_shots_table(tee_shots)
+
+
 @stats_app.command("clubs")
 def stats_clubs(
     date_from: str | None = DATE_FROM_OPTION,
@@ -909,6 +955,7 @@ def _render_second_shots_table(second_shots: pl.DataFrame, *, title: str = "Seco
     columns = [
         "par",
         "club",
+        "inferred_start_lie",
         "second_shots",
         "rounds",
         "avg_distance_m",
@@ -918,9 +965,39 @@ def _render_second_shots_table(second_shots: pl.DataFrame, *, title: str = "Seco
         "avg_to_par",
     ]
     for column in columns:
-        table.add_column(column, justify="right" if column != "club" else "left")
+        table.add_column(
+            column,
+            justify="left" if column in {"club", "inferred_start_lie"} else "right",
+            no_wrap=column == "club",
+        )
 
     for row in second_shots.iter_rows(named=True):
+        table.add_row(*[_display_value(row.get(column)) for column in columns])
+    _console().print(table)
+
+
+def _render_tee_shots_table(tee_shots: pl.DataFrame) -> None:
+    table = Table(title="Tee Shots")
+    columns = [
+        "par",
+        "club",
+        "fairway_result",
+        "tee_shots",
+        "rounds",
+        "avg_distance_m",
+        "par_or_better_pct",
+        "bogey_or_worse_pct",
+        "double_or_worse_pct",
+        "avg_to_par",
+    ]
+    for column in columns:
+        table.add_column(
+            column,
+            justify="left" if column in {"club", "fairway_result"} else "right",
+            no_wrap=column == "club",
+        )
+
+    for row in tee_shots.iter_rows(named=True):
         table.add_row(*[_display_value(row.get(column)) for column in columns])
     _console().print(table)
 

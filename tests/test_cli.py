@@ -524,6 +524,51 @@ def test_stats_second_shots_command_json(monkeypatch: MonkeyPatch, tmp_path: Pat
     assert payload[0]["club"] == "8 Iron"
 
 
+def test_stats_tee_shots_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [{"round_id": 1, "played_on": "2025-06-01", "total_score": 84, "total_par": 72}],
+        unique_by=["round_id"],
+    )
+    storage.upsert_rows(
+        "holes",
+        [
+            {
+                "round_id": 1,
+                "hole_number": 1,
+                "par": 4,
+                "strokes": 4,
+                "fairway_hit": False,
+                "fairway_shot_outcome": "RIGHT",
+            }
+        ],
+        unique_by=["round_id", "hole_number"],
+    )
+    storage.upsert_rows(
+        "shots",
+        [
+            {
+                "round_id": 1,
+                "hole_number": 1,
+                "shot_number": 1,
+                "club": "Driver",
+                "distance_meters": 220.0,
+            }
+        ],
+        unique_by=["round_id", "hole_number", "shot_number"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "tee-shots", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload[0]["club"] == "Driver"
+    assert payload[0]["fairway_result"] == "miss_right"
+
+
 def test_stats_second_shots_command_uses_club_name_overrides(
     monkeypatch: MonkeyPatch, tmp_path: Path
 ) -> None:

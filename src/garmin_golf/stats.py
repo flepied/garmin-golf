@@ -517,10 +517,29 @@ def build_second_shot_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.Data
         return pl.DataFrame()
 
     hole_scoring = _holes_with_relative_score(holes)
+    fairway_hit = (
+        pl.col("fairway_hit").cast(pl.Boolean, strict=False)
+        if "fairway_hit" in holes.columns
+        else pl.lit(None, dtype=pl.Boolean)
+    )
+    fairway_outcome = (
+        pl.col("fairway_shot_outcome").cast(pl.String, strict=False).str.to_uppercase()
+        if "fairway_shot_outcome" in holes.columns
+        else pl.lit(None, dtype=pl.String)
+    )
+    second_shot_holes = holes.select(
+        [
+            "round_id",
+            "hole_number",
+            "par",
+            fairway_hit.alias("fairway_hit"),
+            fairway_outcome.alias("fairway_shot_outcome"),
+        ]
+    )
     joined = (
         shots.filter(pl.col("shot_number").cast(pl.Int64, strict=False) == 2)
         .join(
-            holes.select(["round_id", "hole_number", "par"]),
+            second_shot_holes,
             on=["round_id", "hole_number"],
             how="inner",
         )
@@ -539,15 +558,17 @@ def build_second_shot_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.Data
                 .str.strip_chars()
                 .alias("club"),
                 pl.col("distance_meters").cast(pl.Float64, strict=False).alias("distance_meters"),
+                _inferred_second_shot_start_lie_expr().alias("inferred_start_lie"),
             ]
         )
     )
     if joined.is_empty():
         return pl.DataFrame()
 
-    trimmed_joined = trim_distance_outliers(joined, group_columns=["par", "club"])
+    group_columns = ["par", "club", "inferred_start_lie"]
+    trimmed_joined = trim_distance_outliers(joined, group_columns=group_columns)
     distance_summary = (
-        trimmed_joined.group_by(["par", "club"]).agg(
+        trimmed_joined.group_by(group_columns).agg(
             [
                 pl.col("distance_meters").mean().alias("avg_distance_m"),
                 pl.col("distance_meters").std(ddof=1).alias("distance_stddev_m"),
@@ -565,7 +586,7 @@ def build_second_shot_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.Data
     )
 
     return (
-        joined.group_by(["par", "club"])
+        joined.group_by(group_columns)
         .agg(
             [
                 pl.len().alias("second_shots"),
@@ -576,10 +597,10 @@ def build_second_shot_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.Data
                 pl.col("to_par").cast(pl.Float64, strict=False).mean().alias("avg_to_par"),
             ]
         )
-        .join(distance_summary, on=["par", "club"], how="left")
+        .join(distance_summary, on=group_columns, how="left")
         .sort(
-            by=["par", "second_shots", "avg_to_par", "club"],
-            descending=[False, True, True, False],
+            by=["par", "second_shots", "avg_to_par", "club", "inferred_start_lie"],
+            descending=[False, True, True, False, False],
             nulls_last=True,
         )
         .with_columns(
@@ -592,6 +613,164 @@ def build_second_shot_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.Data
                 pl.col("avg_to_par").round(2),
             ]
         )
+    )
+
+
+def _inferred_second_shot_start_lie_expr() -> pl.Expr:
+    """Classify a par-4/5 second-shot start from Garmin's tee-shot outcome.
+
+    A missed fairway is deliberately not called rough: it can also be a bunker,
+    water, trees, or another unrecorded lie.
+    """
+
+    return (
+        pl.when(pl.col("fairway_shot_outcome") == "HIT")
+        .then(pl.lit("fairway"))
+        .when(pl.col("fairway_shot_outcome").is_in(["LEFT", "RIGHT", "SHORT", "LONG"]))
+        .then(pl.lit("off_fairway"))
+        .when(pl.col("fairway_shot_outcome") == "NO_FAIRWAY")
+        .then(pl.lit("no_fairway"))
+        .when(pl.col("fairway_hit"))
+        .then(pl.lit("fairway"))
+        .when(~pl.col("fairway_hit"))
+        .then(pl.lit("off_fairway"))
+        .otherwise(pl.lit("unknown"))
+    )
+
+
+def _fairway_miss_direction_expr() -> pl.Expr:
+    """Expose Garmin's left/right fairway-miss direction when it is available."""
+
+    return (
+        pl.when(pl.col("fairway_shot_outcome") == "LEFT")
+        .then(pl.lit("left"))
+        .when(pl.col("fairway_shot_outcome") == "RIGHT")
+        .then(pl.lit("right"))
+        .when(pl.col("fairway_shot_outcome") == "HIT")
+        .then(pl.lit("none"))
+        .when(pl.col("fairway_shot_outcome") == "NO_FAIRWAY")
+        .then(pl.lit("not_applicable"))
+        .when(pl.col("fairway_hit"))
+        .then(pl.lit("none"))
+        .otherwise(pl.lit("unknown"))
+    )
+
+
+def build_tee_shot_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.DataFrame:
+    """Summarize first-shot clubs by Garmin's fairway result and hole outcome."""
+
+    if (
+        holes.is_empty()
+        or shots.is_empty()
+        or "round_id" not in holes.columns
+        or "hole_number" not in holes.columns
+        or "par" not in holes.columns
+        or "round_id" not in shots.columns
+        or "hole_number" not in shots.columns
+        or "shot_number" not in shots.columns
+    ):
+        return pl.DataFrame()
+
+    fairway_hit = (
+        pl.col("fairway_hit").cast(pl.Boolean, strict=False)
+        if "fairway_hit" in holes.columns
+        else pl.lit(None, dtype=pl.Boolean)
+    )
+    fairway_outcome = (
+        pl.col("fairway_shot_outcome").cast(pl.String, strict=False).str.to_uppercase()
+        if "fairway_shot_outcome" in holes.columns
+        else pl.lit(None, dtype=pl.String)
+    )
+    tee_shot_holes = holes.select(
+        [
+            "round_id",
+            "hole_number",
+            "par",
+            fairway_hit.alias("fairway_hit"),
+            fairway_outcome.alias("fairway_shot_outcome"),
+        ]
+    )
+    hole_scoring = _holes_with_relative_score(holes)
+    joined = (
+        shots.filter(pl.col("shot_number").cast(pl.Int64, strict=False) == 1)
+        .join(tee_shot_holes, on=["round_id", "hole_number"], how="inner")
+        .join(
+            hole_scoring.select(["round_id", "hole_number", "to_par"]),
+            on=["round_id", "hole_number"],
+            how="left",
+        )
+        .with_columns(
+            [
+                pl.col("par").cast(pl.Int64, strict=False).alias("par"),
+                pl.col("club")
+                .cast(pl.String, strict=False)
+                .fill_null("Unknown")
+                .str.strip_chars()
+                .alias("club"),
+                pl.col("distance_meters").cast(pl.Float64, strict=False).alias("distance_meters"),
+                _fairway_result_expr().alias("fairway_result"),
+            ]
+        )
+    )
+    if joined.is_empty():
+        return pl.DataFrame()
+
+    group_columns = ["par", "club", "fairway_result"]
+    trimmed_joined = trim_distance_outliers(joined, group_columns=group_columns)
+    distance_summary = trimmed_joined.group_by(group_columns).agg(
+        [
+            pl.col("distance_meters").mean().alias("avg_distance_m"),
+            pl.col("distance_meters").std(ddof=1).alias("distance_stddev_m"),
+        ]
+    )
+    return (
+        joined.group_by(group_columns)
+        .agg(
+            [
+                pl.len().alias("tee_shots"),
+                pl.col("round_id").n_unique().alias("rounds"),
+                _pct_expr(pl.col("to_par") <= 0).alias("par_or_better_pct"),
+                _pct_expr(pl.col("to_par") >= 1).alias("bogey_or_worse_pct"),
+                _pct_expr(pl.col("to_par") >= 2).alias("double_or_worse_pct"),
+                pl.col("to_par").cast(pl.Float64, strict=False).mean().alias("avg_to_par"),
+            ]
+        )
+        .join(distance_summary, on=group_columns, how="left")
+        .sort(
+            by=["par", "tee_shots", "avg_to_par", "club", "fairway_result"],
+            descending=[False, True, True, False, False],
+            nulls_last=True,
+        )
+        .with_columns(
+            [
+                pl.col("avg_distance_m").round(1),
+                pl.col("distance_stddev_m").round(1),
+                pl.col("par_or_better_pct").round(2),
+                pl.col("bogey_or_worse_pct").round(2),
+                pl.col("double_or_worse_pct").round(2),
+                pl.col("avg_to_par").round(2),
+            ]
+        )
+    )
+
+
+def _fairway_result_expr() -> pl.Expr:
+    """Retain fairway hits and left/right misses for first-shot analysis."""
+
+    return (
+        pl.when(pl.col("fairway_shot_outcome") == "HIT")
+        .then(pl.lit("fairway"))
+        .when(pl.col("fairway_shot_outcome") == "LEFT")
+        .then(pl.lit("miss_left"))
+        .when(pl.col("fairway_shot_outcome") == "RIGHT")
+        .then(pl.lit("miss_right"))
+        .when(pl.col("fairway_shot_outcome") == "NO_FAIRWAY")
+        .then(pl.lit("no_fairway"))
+        .when(pl.col("fairway_hit"))
+        .then(pl.lit("fairway"))
+        .when(~pl.col("fairway_hit"))
+        .then(pl.lit("missed_fairway"))
+        .otherwise(pl.lit("unknown"))
     )
 
 

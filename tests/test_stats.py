@@ -12,6 +12,7 @@ from garmin_golf.stats import (
     build_round_trends,
     build_second_shot_stats,
     build_summary_stats,
+    build_tee_shot_stats,
     trim_distance_outliers,
 )
 
@@ -740,6 +741,107 @@ def test_build_second_shot_stats() -> None:
         0, named=True
     )
     assert par5_three_wood["avg_to_par"] == 1.0
+
+
+def test_build_second_shot_stats_derives_start_lie() -> None:
+    holes = pl.DataFrame(
+        [
+            {
+                "round_id": 1,
+                "hole_number": 1,
+                "par": 4,
+                "strokes": 4,
+                "fairway_hit": True,
+                "fairway_shot_outcome": "HIT",
+            },
+            {
+                "round_id": 1,
+                "hole_number": 2,
+                "par": 4,
+                "strokes": 5,
+                "fairway_hit": False,
+                "fairway_shot_outcome": "LEFT",
+            },
+            {
+                "round_id": 1,
+                "hole_number": 3,
+                "par": 5,
+                "strokes": 6,
+                "fairway_hit": False,
+                "fairway_shot_outcome": "RIGHT",
+            },
+            {
+                "round_id": 1,
+                "hole_number": 4,
+                "par": 5,
+                "strokes": 5,
+                "fairway_hit": False,
+            },
+        ]
+    )
+    shots = pl.DataFrame(
+        [
+            {
+                "round_id": 1,
+                "hole_number": hole_number,
+                "shot_number": 2,
+                "club": "7 Iron",
+                "distance_meters": 150.0,
+            }
+            for hole_number in range(1, 5)
+        ]
+    )
+
+    stats = build_second_shot_stats(holes, shots)
+
+    assert set(stats["inferred_start_lie"].to_list()) == {"fairway", "off_fairway"}
+
+
+def test_build_tee_shot_stats_preserves_fairway_miss_direction() -> None:
+    holes = pl.DataFrame(
+        [
+            {
+                "round_id": 1,
+                "hole_number": 1,
+                "par": 4,
+                "strokes": 4,
+                "fairway_hit": True,
+                "fairway_shot_outcome": "HIT",
+            },
+            {
+                "round_id": 1,
+                "hole_number": 2,
+                "par": 4,
+                "strokes": 5,
+                "fairway_hit": False,
+                "fairway_shot_outcome": "LEFT",
+            },
+            {
+                "round_id": 1,
+                "hole_number": 3,
+                "par": 4,
+                "strokes": 6,
+                "fairway_hit": False,
+                "fairway_shot_outcome": "RIGHT",
+            },
+        ]
+    )
+    shots = pl.DataFrame(
+        [
+            {
+                "round_id": 1,
+                "hole_number": hole_number,
+                "shot_number": 1,
+                "club": "Driver",
+                "distance_meters": 220.0,
+            }
+            for hole_number in range(1, 4)
+        ]
+    )
+
+    stats = build_tee_shot_stats(holes, shots)
+
+    assert set(stats["fairway_result"].to_list()) == {"fairway", "miss_left", "miss_right"}
 
 
 def test_build_second_shot_stats_trims_distance_outliers_only_for_distance_average() -> None:

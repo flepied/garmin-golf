@@ -1,6 +1,6 @@
 ---
 name: garmin-golf
-description: Use this skill when working with Garmin golf statistics from the local garmin-golf project, especially to run the CLI, inspect round or course history, compare date windows, and identify practice priorities from stored golf data.
+description: Use this skill when working with Garmin golf statistics from the local garmin-golf project, especially to run the CLI, inspect round or course history, compare date windows, identify practice priorities, and give evidence-based training or course-strategy coaching from stored data.
 ---
 
 # Garmin Golf Stats
@@ -36,6 +36,82 @@ user asks to extend or debug the implementation itself.
 If the CLI reports that no local rounds are available, explain that the dataset
 has not been mirrored yet. Only move into the browser mirroring workflow if the
 user asks for ingestion help.
+
+## AI Coaching Workflow
+
+Use the CLI as the evidence source and do the coaching interpretation after the
+relevant JSON has been collected. Do not ask the user to provide raw Garmin JSON
+or infer a conclusion that the output does not support.
+
+For any coaching response:
+
+1. State the scope: course, date window, number of rounds, and (where relevant)
+   the number of shots or holes behind the observation.
+2. Compare like with like. For a club decision, compare the same `context`
+   (for example `tee_par_4`), not a driver tee shot against a wedge approach.
+3. Use outcomes together: `avg_to_par`, `double_or_worse_pct`,
+   `bogey_or_worse_pct`, penalties, GIR/FIR, and sample size. Do not choose a
+   club from distance alone.
+4. Make recommendations conditional rather than absolute: "based on your
+   recorded rounds" and "consider" are appropriate when conditions, tee set,
+   wind, or lie are unknown.
+5. Separate a *strategy* observation (club/target/risk choice) from an
+   *execution* observation. Scorecard data alone cannot prove why a shot missed.
+6. End with one or two measurable actions, not a broad instruction such as
+   "improve your short game."
+
+Treat small samples as exploratory. A useful default is to call out fewer than
+10 shots or fewer than 5 rounds explicitly; never present it as a reliable
+club-selection rule. The CLI does not record weather, wind, pin position for
+every shot, intended target, hazard geometry, or whether a player deliberately
+chose a recovery. It therefore supports personal historical tendencies, not a
+universal yardage book or swing diagnosis.
+
+### Coaching question → data to extract
+
+| Coaching question | CLI extraction | What the AI can responsibly advise |
+| --- | --- | --- |
+| What should I practise? | `stats practice-focus --period last-12-months --json`; `stats summary --period last-12-months --json`; `stats putting --period last-12-months --json` | Rank one or two scoring leaks, pick a distance-specific putting or approach drill, and define a next-5/10-round metric. `practice-focus` is a heuristic: its estimated strokes are overlapping opportunities, not additive strokes-gained. |
+| Is recent form improving? | `stats trends --window 5 --period last-12-months --json` | Identify sustained movement in score, GIR, FIR, scrambling, three-putts, and penalties; distinguish a trend from a single round. |
+| Which holes need a plan on a course? | `stats course --course "<exact course>" --period last-12-months --json` | Prioritise holes by `avg_to_par`, double-or-worse rate, penalties, FIR/GIR, and three-putts. Suggest a conservative objective such as protecting against doubles or aiming for centre-green. |
+| Which opening club has produced the best outcomes on one hole? | `stats clubs --course "<exact course>" --hole <n> --by-context --json` | Filter rows to `tee_par_3`, `tee_par_4`, or `tee_par_5`; compare each club's `shots`, `rounds`, `avg_to_par`, `bogey_or_worse_pct`, `double_or_worse_pct`, and distance dispersion. Recommend a *candidate* tee club only when its sample is adequate and its outcome trade-off is favourable. |
+| Is a club a sound option on a recurring hole? | `stats clubs --course "<exact course>" --hole <n> --json`, then the `--by-context` form | Use the first output for the club's observed distances and dispersion, then use the context output for scoring outcomes. Do not conflate all uses of a club on a hole with its tee-shot performance. |
+| Which club/context is costly overall? | `stats clubs --by-context --period last-12-months --json` | Find repeated contexts with high `avg_to_par` or double/bogey rates, then propose a practice or conservative strategy experiment. This is association, not proof that the club caused the score. |
+| Which first-shot miss costs the most? | `stats tee-shots --period last-12-months --json` | Compare first-shot club, distance, and resulting hole outcomes for `fairway`, `miss_left`, `miss_right`, `missed_fairway`, `no_fairway`, and `unknown`. This command is global for the selected date range; it cannot isolate one course or hole. |
+| Are second shots on par 4s/5s a problem? | `stats second-shots --period last-12-months --json` | Compare club usage, distance, and hole outcomes by par type and inferred second-shot start: `fairway`, `off_fairway`, `no_fairway`, or `unknown`. This command is global for the selected date range; it cannot isolate one course or hole. |
+| What happened in a bad or good round? | `stats round --round-id <id> --json` | Review each hole's score, GIR, FIR, putts, penalties, clubs, and par-4/5 second shots; identify candidate turning points while acknowledging missing intent and conditions. |
+
+### Tee-club strategy example
+
+For a request such as "What should I hit from the tee on Aigle hole 2?", run:
+
+```bash
+uv run garmin-golf stats course --course "Golf National ~ Aigle" --period last-12-months --json
+uv run garmin-golf stats clubs --course "Golf National ~ Aigle" --hole 2 --by-context --period last-12-months --json
+```
+
+First establish why the hole matters using the course-hole output. Then retain
+only `tee_par_4` rows from the club-context output and compare the tee clubs.
+The preferred coaching statement has this form:
+
+> Across N recorded tee shots on this hole, Club A had lower average to par and
+> fewer doubles than Club B. If today's tee, wind, and trouble match those
+> rounds, consider Club A with a conservative target; reassess when the sample
+> is small or the distance leaves an unsuitable approach.
+
+Never claim that the data proves a particular aim line, hazard avoidance plan,
+or optimal club unless those inputs are separately available.
+
+### Recommended coaching response shape
+
+Keep a response concise and evidence-led:
+
+1. **Evidence:** exact scope and two or three decisive metrics.
+2. **Interpretation:** the most plausible, clearly qualified explanation.
+3. **Next-round plan:** a club/target/risk choice for the relevant holes.
+4. **Training plan:** one drill, volume or session count, and success measure.
+5. **Confidence and missing context:** sample size plus conditions that could
+   change the recommendation.
 
 ## Core Commands
 
@@ -112,6 +188,8 @@ Use `stats annotate-round` to set local round metadata. `--exclude-from-stats` r
 ```bash
 uv run garmin-golf stats second-shots --json
 uv run garmin-golf stats second-shots --period last-12-months --json
+uv run garmin-golf stats tee-shots --json
+uv run garmin-golf stats tee-shots --period last-12-months --json
 uv run garmin-golf stats clubs --json
 uv run garmin-golf stats clubs --period last-12-months --json
 uv run garmin-golf stats clubs --from 2025-01-01 --to 2025-12-31 --json
@@ -120,7 +198,8 @@ uv run garmin-golf stats clubs --course "Golf National ~ Aigle" --json
 uv run garmin-golf stats clubs --course "Golf National ~ Aigle" --hole 7 --by-context --json
 ```
 
-Use `stats second-shots` when the user wants club usage and outcomes on second shots for par 4s and par 5s.
+Use `stats second-shots` when the user wants club usage and outcomes on second shots for par 4s and par 5s. It derives `inferred_start_lie` for the second shot from the tee-shot fairway result: `fairway`, `off_fairway`, `no_fairway`, or `unknown`. These are not confirmed rough/bunker lies; they only describe the preceding tee shot's fairway result.
+Use `stats tee-shots` when the user wants to analyze first-shot club choice and the cost of a fairway, left miss, or right miss. `fairway_result` comes from Garmin's tee-shot outcome; it is the authoritative place to compare miss direction. A `missed_fairway` result does not prove the ball was in rough—it may be any off-fairway location.
 Use `stats clubs` when club labels look suspicious or need bag-specific overrides; it exposes observed `club_id` values, inferred names, configured names, counts, average distances, and distance dispersion (`distance_stddev_m`) based on the same outlier-trimmed samples.
 Use `stats clubs --by-context` when the user wants club performance split by contexts such as par-3 tee shots, par-4 tee shots, par-4 approaches, par-5 second shots, short game, recovery, and putting.
 Add `--course` when the user wants club usage only on one course across all recorded rounds there. Add `--hole` to narrow further to one specific hole, optionally combined with `--by-context`.

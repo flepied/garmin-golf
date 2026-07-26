@@ -92,7 +92,10 @@ def _shots_with_configured_club_names(shots: pl.DataFrame) -> pl.DataFrame:
 
 DATE_FROM_OPTION = typer.Option(None, "--from", help="Inclusive round date in YYYY-MM-DD format.")
 DATE_TO_OPTION = typer.Option(None, "--to", help="Inclusive round date in YYYY-MM-DD format.")
-ROUND_ID_REQUIRED_OPTION = typer.Option(..., "--round-id", help="Round id to inspect.")
+ROUND_ID_OPTION = typer.Option(None, "--round-id", help="Round id to inspect.")
+LAST_ROUND_OPTION = typer.Option(
+    False, "--last-round", help="Use the most recently played local round."
+)
 ROUND_COMMENT_OPTION = typer.Option(None, "--comment", help="Freeform round comment.")
 EXCLUDE_FROM_STATS_OPTION = typer.Option(
     False,
@@ -311,7 +314,8 @@ def stats_summary(
 
 @stats_app.command("annotate-round")
 def stats_annotate_round(
-    round_id: int = ROUND_ID_REQUIRED_OPTION,
+    round_id: int | None = ROUND_ID_OPTION,
+    last_round: bool = LAST_ROUND_OPTION,
     comment: str | None = ROUND_COMMENT_OPTION,
     exclude_from_stats: bool = EXCLUDE_FROM_STATS_OPTION,
     include_in_stats: bool = INCLUDE_IN_STATS_OPTION,
@@ -328,9 +332,12 @@ def stats_annotate_round(
     storage = _storage()
     rounds = storage.read_table("rounds")
     canonical_rounds, round_aliases = _canonicalize_rounds(rounds)
-    resolved_round_id = round_aliases.get(round_id, round_id)
-    if canonical_rounds.is_empty() or "round_id" not in canonical_rounds.columns:
-        raise typer.BadParameter(f"Round {round_id} was not found in the local dataset.")
+    resolved_round_id = _resolve_round_selector(
+        canonical_rounds,
+        round_aliases,
+        round_id=round_id,
+        last_round=last_round,
+    )
 
     target = canonical_rounds.filter(pl.col("round_id") == resolved_round_id)
     if target.is_empty():
@@ -814,13 +821,22 @@ def stats_course(
 
 
 @stats_app.command("round")
-def stats_round(round_id: int = ROUND_ID_REQUIRED_OPTION, json_output: bool = JSON_OPTION) -> None:
+def stats_round(
+    round_id: int | None = ROUND_ID_OPTION,
+    last_round: bool = LAST_ROUND_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
     """Print local analysis for one round."""
 
     storage = _storage()
     rounds = storage.read_table("rounds")
     canonical_rounds, round_aliases = _canonicalize_rounds(rounds)
-    resolved_round_id = round_aliases.get(round_id, round_id)
+    resolved_round_id = _resolve_round_selector(
+        canonical_rounds,
+        round_aliases,
+        round_id=round_id,
+        last_round=last_round,
+    )
     all_holes = storage.read_table("holes")
     all_shots = _shots_with_configured_club_names(storage.read_table("shots"))
     summary = build_round_stats(
@@ -1456,6 +1472,36 @@ def _format_round_title(round_id: int, round_info: pl.DataFrame) -> str:
     if not suffix_parts:
         return f"Round {round_id}"
     return f"Round {round_id} ({' | '.join(suffix_parts)})"
+
+
+def _resolve_round_selector(
+    rounds: pl.DataFrame,
+    round_aliases: Mapping[int, int],
+    *,
+    round_id: int | None,
+    last_round: bool,
+) -> int:
+    if round_id is not None and last_round:
+        raise typer.BadParameter("Use either --round-id or --last-round, not both.")
+    if round_id is not None:
+        return round_aliases.get(round_id, round_id)
+    if not last_round:
+        raise typer.BadParameter("Provide --round-id or --last-round.")
+    if rounds.is_empty() or "round_id" not in rounds.columns:
+        raise typer.BadParameter("No local rounds are available.")
+
+    sort_columns = [
+        column for column in ["played_on", "start_time", "round_id"] if column in rounds.columns
+    ]
+    latest = rounds.sort(
+        by=sort_columns,
+        descending=[True] * len(sort_columns),
+        nulls_last=True,
+    ).row(0, named=True)
+    selected_round_id = latest.get("round_id")
+    if not isinstance(selected_round_id, int):
+        raise typer.BadParameter("The most recent local round has no usable round id.")
+    return selected_round_id
 
 
 def _display_value(value: object) -> str:

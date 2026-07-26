@@ -200,6 +200,58 @@ def test_stats_annotate_round_command_sets_exclusion_and_comment(
     assert row["comment"] == "windy"
 
 
+def test_round_commands_support_last_round(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [
+            {"round_id": 1, "played_on": "2025-06-01", "total_score": 84, "total_par": 72},
+            {"round_id": 2, "played_on": "2025-06-08", "total_score": 82, "total_par": 72},
+        ],
+        unique_by=["round_id"],
+    )
+
+    runner = CliRunner()
+    round_result = runner.invoke(app, ["stats", "round", "--last-round", "--json"])
+    annotate_result = runner.invoke(
+        app,
+        [
+            "stats",
+            "annotate-round",
+            "--last-round",
+            "--comment",
+            "latest",
+            "--json",
+        ],
+    )
+
+    assert round_result.exit_code == 0
+    assert json.loads(round_result.stdout)["summary"]["round_id"] == 2
+    assert annotate_result.exit_code == 0
+    assert json.loads(annotate_result.stdout)["round_id"] == 2
+
+
+def test_round_commands_reject_both_round_selectors(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
+    storage = Storage(Settings())
+    storage.upsert_rows(
+        "rounds",
+        [{"round_id": 1, "played_on": "2025-06-01", "total_score": 84, "total_par": 72}],
+        unique_by=["round_id"],
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["stats", "round", "--round-id", "1", "--last-round"],
+    )
+
+    assert result.exit_code != 0
+    assert "Use either --round-id or --last-round, not both." in result.output
+
+
 def test_stats_practice_focus_command(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("GARMIN_GOLF_DATA_DIR", str(tmp_path))
     storage = Storage(Settings())

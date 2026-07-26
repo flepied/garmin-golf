@@ -113,6 +113,57 @@ Keep a response concise and evidence-led:
 5. **Confidence and missing context:** sample size plus conditions that could
    change the recommendation.
 
+### Post-round debrief
+
+When a user asks for a round debrief, start with the recorded round and add
+historical context only where it changes the advice:
+
+```bash
+uv run garmin-golf stats round --round-id <id> --json
+uv run garmin-golf stats trends --window 5 --json
+uv run garmin-golf stats course --course "<exact course>" --json
+```
+
+`stats round --json` includes the hole table and the recorded `shots` sequence,
+so use the actual club and distance played on each hole. Use course history to
+put a hole in context; do not compare one round against an unrelated all-time
+aggregate when recent or course-specific data is available.
+
+Write the debrief in exactly these five sections:
+
+1. **What went well** — identify one or two strengths supported by the round
+   data, such as avoiding penalties, converting missed greens, a strong par-5
+   result, or good lag putting. Do not use empty praise.
+2. **Where the score was lost** — name the decisive holes or repeated pattern,
+   quantify the cost (for example doubles, penalties, three-putts, or score
+   versus the player's course-hole history), and cite the relevant club/shot
+   sequence when available.
+3. **The two decisions worth changing** — make two concrete, conditional
+   next-round experiments: club selection, target conservatism, lay-up choice,
+   or recovery discipline. Distinguish a likely strategic change from an
+   execution miss; scorecard data cannot prove intent.
+4. **One practice focus** — prescribe one focused drill linked to the observed
+   pattern, with a volume and a measurable on-course review metric. Do not list
+   several unrelated drills.
+5. **One question for the golfer** — ask the single missing-context question
+   most likely to change the recommendation. For example: "Was the right miss
+   on hole 11 caused by wind, alignment, or a deliberate aggressive line?"
+
+For a potentially decisive hole, describe the evidence in this order:
+
+```text
+What happened today → the relevant historical pattern → qualified next action
+```
+
+Example: "On hole 11 you hit Driver, missed right, then made double. Across
+your recorded history on that hole, right misses lead to worse outcomes than
+fairways; if conditions are similar, test a club or target that removes the
+right-side miss and review the result over the next five rounds."
+
+Keep the debrief concise. Include sample sizes for any historical claim, call
+out small samples, and never infer wind, hazard location, rough versus bunker,
+or the player's intent from an unlabelled shot.
+
 ## Core Commands
 
 ### Summary and trends
@@ -177,10 +228,13 @@ practice priorities and estimates strokes that could be saved per 18 holes.
 ```bash
 uv run garmin-golf stats rounds --json
 uv run garmin-golf stats round --round-id 22068626916 --json
+uv run garmin-golf stats round --last-round --json
 uv run garmin-golf stats annotate-round --round-id 22068626916 --exclude-from-stats --comment "match play"
+uv run garmin-golf stats annotate-round --last-round --comment "windy"
 ```
 
 Run `stats rounds` first when the user does not know the round id. `stats round --json` returns the round summary, a hole-by-hole table, round club usage, the recorded shot sequence (`shots`) with club and distance on every hole, and par-4/par-5 second-shot breakdowns when shot data is available.
+Use `--last-round` instead of `--round-id` to select the most recently played local round. The two selectors are mutually exclusive.
 Use `stats annotate-round` to set local round metadata. `--exclude-from-stats` removes the round from aggregate multi-round stats, `--include-in-stats` restores it, `--comment` sets a freeform note, and `--clear-comment` removes the note. Single-round `stats round` remains available for excluded rounds.
 
 ### Shot and club analysis

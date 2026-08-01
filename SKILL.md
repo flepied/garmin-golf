@@ -20,6 +20,11 @@ Use this skill for questions about the local `garmin-golf` dataset and CLI. Pref
 - Inspect inferred and configured club labels with `stats clubs`
 - Review rolling form with `stats trends`
 - Break down club performance by usage context with `stats clubs --by-context`
+- Identify one current priority with `analyze player`
+- Check data coverage with `analyze data-quality`
+- Produce a structured post-round debrief with `analyze round`
+- Identify repeated risk on a familiar course with `analyze course`
+- Start, inspect, review, or cancel a measurable local experiment
 - Explain golf metrics already exposed by the CLI
 
 Do not start by editing the project. Only switch to source inspection when the
@@ -31,7 +36,9 @@ user asks to extend or debug the implementation itself.
 2. Start with the narrowest command that answers the question.
 3. Prefer `--json` when the consumer is an AI agent or another script.
 4. Use `--period` or `--from/--to` when the user asks for a time window.
-5. Summarize the key trends instead of dumping raw tables back to the user.
+5. Use `analyze player` first when the user asks what deserves attention most;
+   use `stats` commands to investigate that selected priority.
+6. Summarize the key trends instead of dumping raw tables back to the user.
 
 If the CLI reports that no local rounds are available, explain that the dataset
 has not been mirrored yet. Only move into the browser mirroring workflow if the
@@ -67,10 +74,58 @@ every shot, intended target, hazard geometry, or whether a player deliberately
 chose a recovery. It therefore supports personal historical tendencies, not a
 universal yardage book or swing diagnosis.
 
+## Prioritized analysis engine
+
+The `analyze` namespace is deterministic: it calculates coverage, evidence,
+candidate scores, confidence, limitations, and a single primary priority before
+rendering advice. Do not replace its priority with an untested interpretation of
+raw data. Use `stats` commands for follow-up detail, not to silently override it.
+
+```bash
+uv run garmin-golf analyze data-quality --json
+uv run garmin-golf analyze player --period last-12-months --json
+uv run garmin-golf analyze player --last-rounds 20 --json
+uv run garmin-golf analyze round --last-round --json
+uv run garmin-golf analyze course --course "Golf National ~ Aigle" --json
+```
+
+- `analyze player` and `analyze data-quality` default to the last 12 months.
+  They accept either date filters or `--last-rounds`, never both.
+- Treat `unavailable` as no finding and `limited` as exploratory; only describe
+  `usable` or `strong` results as qualified conclusions.
+- `analyze player` returns at most five candidates and exactly one primary
+  priority, with samples, comparison, confidence, limitations, action, and
+  review metrics.
+- `analyze round` contains the five required debrief sections and uses recent
+  12-month history. It cannot establish swing cause, wind, target intent, or
+  hazard geometry.
+- `analyze course` ranks high-risk holes and makes only conditional conservative
+  suggestions. It does not prove an aim line or universally optimal club.
+
+Current deterministic detectors cover double-or-worse concentration, tee-shot
+miss-direction cost, and approach distance-band weakness when geometry coverage
+is usable. An `Unknown` Garmin club label is not a valid tee-club recommendation.
+
+### Experiments
+
+```bash
+uv run garmin-golf experiment start --insight-id <id> --json
+uv run garmin-golf experiment list --json
+uv run garmin-golf experiment show --experiment-id <id> --json
+uv run garmin-golf experiment review --experiment-id <id> --json
+uv run garmin-golf experiment cancel --experiment-id <id> --json
+```
+
+Start only an insight returned by the current default `analyze player` scope.
+The engine freezes its baseline and eligibility payload in local Parquet. Garmin
+cannot verify whether the golfer followed an intended target or strategy, so
+state that limitation when interpreting a review.
+
 ### Coaching question → data to extract
 
 | Coaching question | CLI extraction | What the AI can responsibly advise |
 | --- | --- | --- |
+| What should I focus on first? | `analyze player --period last-12-months --json`; optionally `analyze data-quality --json` | Lead with the engine's one primary priority, evidence, confidence, limitations, and measurable experiment. Use raw stats only to clarify it. |
 | What should I practise? | `stats practice-focus --period last-12-months --json`; `stats summary --period last-12-months --json`; `stats putting --period last-12-months --json` | Rank one or two scoring leaks, pick a distance-specific putting or approach drill, and define a next-5/10-round metric. `practice-focus` is a heuristic: its estimated strokes are overlapping opportunities, not additive strokes-gained. |
 | Is recent form improving? | `stats trends --window 5 --period last-12-months --json` | Identify sustained movement in score, GIR, FIR, scrambling, three-putts, and penalties; distinguish a trend from a single round. |
 | Which holes need a plan on a course? | `stats course --course "<exact course>" --period last-12-months --json` | Prioritise holes by `avg_to_par`, double-or-worse rate, penalties, FIR/GIR, and three-putts. Suggest a conservative objective such as protecting against doubles or aiming for centre-green. |
@@ -119,15 +174,16 @@ When a user asks for a round debrief, start with the recorded round and add
 historical context only where it changes the advice:
 
 ```bash
-uv run garmin-golf stats round --round-id <id> --json
+uv run garmin-golf analyze round --round-id <id> --json
 uv run garmin-golf stats trends --window 5 --json
 uv run garmin-golf stats course --course "<exact course>" --json
 ```
 
-`stats round --json` includes the hole table and the recorded `shots` sequence,
-so use the actual club and distance played on each hole. Use course history to
-put a hole in context; do not compare one round against an unrelated all-time
-aggregate when recent or course-specific data is available.
+Start with `analyze round --json` for the deterministic five-section debrief.
+Then use `stats round --json` for the hole table and recorded shot sequence when
+the debrief needs concrete club or distance context. Do not compare one round
+against an unrelated all-time aggregate when recent or course-specific data is
+available.
 
 Write the debrief in exactly these five sections:
 

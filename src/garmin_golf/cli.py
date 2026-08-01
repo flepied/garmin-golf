@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json
@@ -11,6 +12,14 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from .analysis import analyze_course, analyze_data_quality, analyze_player, analyze_round
+from .analysis.experiments import (
+    cancel_experiment,
+    get_experiment,
+    list_experiments,
+    review_experiment,
+    start_experiment,
+)
 from .browser_mirror import BrowserMirror, BrowserMirrorError, validate_scorecards_url
 from .config import default_config_template, get_config_file, get_settings, set_club_name_override
 from .stats import (
@@ -34,9 +43,13 @@ app = typer.Typer(help="Download golf data from Garmin Connect and compute local
 config_app = typer.Typer(help="Configuration commands.")
 mirror_app = typer.Typer(help="Interactive browser mirroring commands.")
 stats_app = typer.Typer(help="Local statistics commands.")
+analyze_app = typer.Typer(help="Prioritized deterministic golf analysis.")
+experiment_app = typer.Typer(help="Track measurable analysis experiments.")
 app.add_typer(config_app, name="config")
 app.add_typer(mirror_app, name="mirror")
 app.add_typer(stats_app, name="stats")
+app.add_typer(analyze_app, name="analyze")
+app.add_typer(experiment_app, name="experiment")
 
 
 def _console() -> Console:
@@ -160,6 +173,35 @@ ROUND_MATCH_TOLERANCE = timedelta(hours=2)
 TableJustify = Literal["default", "left", "center", "right", "full"]
 
 
+def _analysis_scope_options(
+    date_from: str | None, date_to: str | None, period: str | None, last_rounds: int | None
+) -> dict[str, object]:
+    if last_rounds is not None and (
+        date_from is not None or date_to is not None or period is not None
+    ):
+        raise typer.BadParameter("Use --last-rounds or date filters, not both.")
+    if last_rounds is not None:
+        if last_rounds <= 0:
+            raise typer.BadParameter("--last-rounds must be positive.")
+        return {"last_rounds": last_rounds}
+    if date_from is None and date_to is None and period is None:
+        period = "last-12-months"
+    resolved_from, resolved_to = _resolve_date_window(
+        date_from=date_from, date_to=date_to, period=period
+    )
+    return {"date_from": resolved_from, "date_to": resolved_to}
+
+
+def _analysis_tables() -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    storage = _storage()
+    rounds, _ = _canonicalize_rounds(storage.read_table("rounds"))
+    return (
+        rounds,
+        storage.read_table("holes"),
+        _shots_with_configured_club_names(storage.read_table("shots")),
+    )
+
+
 @config_app.command("init")
 def config_init(force: bool = FORCE_OPTION, json_output: bool = JSON_OPTION) -> None:
     """Create a starter config file under ~/.config/garmin-golf/."""
@@ -273,6 +315,212 @@ def mirror_scorecards(
         f"imported={result.rounds_imported} rounds, {result.holes_imported} holes, "
         f"{result.shots_imported} shots into {output_dir}"
     )
+
+
+@analyze_app.command("data-quality")
+def analyze_data_quality_command(
+    date_from: str | None = DATE_FROM_OPTION,
+    date_to: str | None = DATE_TO_OPTION,
+    period: str | None = PERIOD_OPTION,
+    last_rounds: int | None = typer.Option(None, "--last-rounds", min=1),
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Report whether local data supports each analysis domain."""
+
+    rounds, holes, shots = _analysis_tables()
+    result = analyze_data_quality(
+        rounds, holes, shots, **_analysis_scope_options(date_from, date_to, period, last_rounds)
+    )
+    payload = result.model_dump(mode="json")
+    if json_output:
+        _emit_json(payload)
+        return
+    _render_mapping(
+        "Analysis Data Quality",
+        {key: value["status"] for key, value in payload["data_quality"].items()},
+    )
+
+
+@analyze_app.command("player")
+def analyze_player_command(
+    date_from: str | None = DATE_FROM_OPTION,
+    date_to: str | None = DATE_TO_OPTION,
+    period: str | None = PERIOD_OPTION,
+    last_rounds: int | None = typer.Option(None, "--last-rounds", min=1),
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Select one evidence-backed current improvement priority."""
+
+    rounds, holes, shots = _analysis_tables()
+    result = analyze_player(
+        rounds, holes, shots, **_analysis_scope_options(date_from, date_to, period, last_rounds)
+    )
+    payload = result.model_dump(mode="json")
+    payload["active_experiments"] = list_experiments(_storage())
+    if json_output:
+        _emit_json(payload)
+        return
+    primary = payload["primary_priority"]
+    if primary is None:
+        _console().print("No supported primary priority is available for this scope yet.")
+        return
+    _render_mapping(
+        "Primary Priority",
+        {
+            "title": primary["title"],
+            "observation": primary["observation"],
+            "confidence": primary["confidence"],
+            "priority_score": primary["priority_score"],
+        },
+    )
+
+
+@analyze_app.command("course")
+def analyze_course_command(
+    course: str = COURSE_REQUIRED_OPTION,
+    date_from: str | None = DATE_FROM_OPTION,
+    date_to: str | None = DATE_TO_OPTION,
+    period: str | None = PERIOD_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Identify high-risk holes and supported conservative course decisions."""
+
+    rounds, holes, shots = _analysis_tables()
+    result = analyze_course(
+        rounds,
+        holes,
+        shots,
+        course=course,
+        **_analysis_scope_options(date_from, date_to, period, None),
+    )
+    payload = result.model_dump(mode="json")
+    if json_output:
+        _emit_json(payload)
+        return
+    _render_mapping(
+        "Course Analysis",
+        {
+            "course": course,
+            "rounds": payload["scope"]["rounds"],
+            "primary_priority": payload["primary_priority"]["title"]
+            if payload["primary_priority"]
+            else "No supported strategy candidate",
+        },
+    )
+
+
+@analyze_app.command("round")
+def analyze_round_command(
+    round_id: int | None = ROUND_ID_OPTION,
+    last_round: bool = LAST_ROUND_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Render the deterministic five-section post-round debrief."""
+
+    rounds, aliases = _canonicalize_rounds(_storage().read_table("rounds"))
+    resolved_round_id = _resolve_round_selector(
+        rounds, aliases, round_id=round_id, last_round=last_round
+    )
+    payload = analyze_round(
+        rounds,
+        _storage().read_table("holes"),
+        _shots_with_configured_club_names(_storage().read_table("shots")),
+        round_id=resolved_round_id,
+        history_options=_analysis_scope_options(None, None, None, None),
+    )
+    if json_output:
+        _emit_json(payload)
+        return
+    sections = payload["sections"]
+    for heading, value in sections.items():
+        _console().print(f"[bold]{heading.replace('_', ' ').title()}[/bold]")
+        _console().print(value)
+
+
+@experiment_app.command("list")
+def experiment_list(json_output: bool = JSON_OPTION) -> None:
+    """List locally persisted experiments."""
+
+    payload = list_experiments(_storage())
+    if json_output:
+        _emit_json(payload)
+        return
+    _console().print(payload or "No experiments have been started.")
+
+
+@experiment_app.command("show")
+def experiment_show(
+    experiment_id: str = typer.Option(..., "--experiment-id"), json_output: bool = JSON_OPTION
+) -> None:
+    """Show one persisted experiment."""
+
+    try:
+        payload = get_experiment(_storage(), experiment_id)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if json_output:
+        _emit_json(payload)
+        return
+    _render_mapping("Experiment", payload)
+
+
+@experiment_app.command("start")
+def experiment_start(
+    insight_id: str = typer.Option(..., "--insight-id"), json_output: bool = JSON_OPTION
+) -> None:
+    """Create an experiment from a currently eligible player insight."""
+
+    rounds, holes, shots = _analysis_tables()
+    result = analyze_player(rounds, holes, shots, **_analysis_scope_options(None, None, None, None))
+    candidate = next((item for item in result.insights if item.id == insight_id), None)
+    if candidate is None:
+        raise typer.BadParameter("Insight is not currently eligible in the default analysis scope.")
+    baseline_ids = (
+        rounds.filter(
+            pl.col("round_id").is_in([r for r in rounds["round_id"].to_list() if r is not None])
+        )["round_id"]
+        .drop_nulls()
+        .to_list()
+    )
+    payload = start_experiment(_storage(), candidate, baseline_ids)
+    if json_output:
+        _emit_json(payload)
+        return
+    _render_mapping("Experiment Started", payload)
+
+
+@experiment_app.command("review")
+def experiment_review(
+    experiment_id: str = typer.Option(..., "--experiment-id"), json_output: bool = JSON_OPTION
+) -> None:
+    """Review an active experiment after its eligible horizon."""
+
+    rounds, _, _ = _analysis_tables()
+    ids = rounds["round_id"].drop_nulls().to_list() if "round_id" in rounds.columns else []
+    try:
+        payload = review_experiment(_storage(), experiment_id, ids)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if json_output:
+        _emit_json(payload)
+        return
+    _render_mapping("Experiment Review", payload)
+
+
+@experiment_app.command("cancel")
+def experiment_cancel(
+    experiment_id: str = typer.Option(..., "--experiment-id"), json_output: bool = JSON_OPTION
+) -> None:
+    """Cancel an active experiment."""
+
+    try:
+        payload = cancel_experiment(_storage(), experiment_id)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if json_output:
+        _emit_json(payload)
+        return
+    _render_mapping("Experiment Cancelled", payload)
 
 
 @stats_app.command("summary")

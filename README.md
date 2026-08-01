@@ -112,6 +112,26 @@ uv run garmin-golf stats clubs --json
 
 JSON mode emits structured data only and skips Rich tables and prose formatting.
 
+## Prioritized analysis
+
+The deterministic analysis engine selects one current priority from local history,
+with sample sizes, limitations, and a measurable experiment rather than an
+unbounded coaching response:
+
+```bash
+uv run garmin-golf analyze data-quality --json
+uv run garmin-golf analyze player --period last-12-months --json
+uv run garmin-golf analyze round --last-round
+uv run garmin-golf analyze course --course "Golf National ~ Aigle" --json
+uv run garmin-golf experiment start --insight-id scoring_double_or_worse_concentration
+uv run garmin-golf experiment list --json
+```
+
+`analyze player` defaults to the last 12 months. Existing `stats` commands remain
+available for detailed raw statistics. Experiments preserve their baseline locally
+and use a five-round review horizon; Garmin data cannot verify a golfer's intended
+target or strategy, so results remain qualified associations.
+
 To review your history on a specific course and identify the hardest holes:
 
 ```bash

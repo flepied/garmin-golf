@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import polars as pl
 
-from garmin_golf.analysis import analyze_data_quality, analyze_player
+from garmin_golf.analysis import (
+    analyze_course,
+    analyze_data_quality,
+    analyze_player,
+    build_club_approach_stats,
+)
 
 
 def _rounds(count: int = 5) -> pl.DataFrame:
@@ -79,3 +84,77 @@ def test_player_analysis_does_not_recommend_unknown_club() -> None:
     result = analyze_player(rounds, holes, shots)
 
     assert not any(candidate.category == "tee_shot" for candidate in result.insights)
+
+
+def test_club_approach_stats_reports_proximity_and_gir() -> None:
+    semicircle = 2**31 / 180.0
+    holes = pl.DataFrame(
+        [
+            {
+                "round_id": round_id,
+                "hole_number": 1,
+                "par": 4,
+                "strokes": 4,
+                "gir": True,
+                "pin_position_lat": 48.0 * semicircle,
+                "pin_position_lon": 2.001 * semicircle,
+            }
+            for round_id in range(1, 6)
+        ]
+    )
+    shots = pl.DataFrame(
+        [
+            {
+                "round_id": round_id,
+                "hole_number": 1,
+                "shot_number": 2,
+                "shot_type": "APPROACH",
+                "club": "8 Iron",
+                "start_lat": 48.0 * semicircle,
+                "start_lon": 2.0 * semicircle,
+                "end_lat": 48.0 * semicircle,
+                "end_lon": 2.0001 * semicircle,
+            }
+            for round_id in range(1, 6)
+        ]
+    )
+
+    result = build_club_approach_stats(holes, shots)
+
+    assert result.height == 1
+    assert result.row(0, named=True)["club"] == "8 Iron"
+    assert result.row(0, named=True)["gir_pct"] == 100.0
+
+
+def test_course_analysis_exposes_tee_club_options_on_high_risk_holes() -> None:
+    rounds = _rounds(10).with_columns(pl.lit("Test Course").alias("course_name"))
+    holes = pl.DataFrame(
+        [
+            {
+                "round_id": round_id,
+                "hole_number": 1,
+                "par": 4,
+                "strokes": 6,
+                "gir": False,
+                "fairway_hit": False,
+                "putts": 2,
+                "penalties": 0,
+            }
+            for round_id in range(1, 11)
+        ]
+    )
+    shots = pl.DataFrame(
+        [
+            {
+                "round_id": round_id,
+                "hole_number": 1,
+                "shot_number": 1,
+                "club": "Driver" if round_id <= 5 else "3 Wood",
+            }
+            for round_id in range(1, 11)
+        ]
+    )
+
+    result = analyze_course(rounds, holes, shots, course="Test Course")
+
+    assert len(result.player_profile["tee_club_options"]) == 2

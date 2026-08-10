@@ -22,6 +22,7 @@ APPROACH_BUCKETS = (
     (150.0, 175.0, "150–175 m"),
     (175.0, float("inf"), "> 175 m"),
 )
+GARMIN_SEMICIRCLE_TO_DEGREES = 180.0 / (2**31)
 PRIORITY_WEIGHTS = (0.35, 0.20, 0.25, 0.20)
 
 
@@ -219,6 +220,17 @@ def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 6371008.8 * 2 * asin(sqrt(a))
 
 
+def _coordinate_degrees(value: int | float, *, latitude: bool) -> float | None:
+    """Accept Garmin semicircles as well as decimal-degree coordinates."""
+
+    numeric = float(value)
+    limit = 90.0 if latitude else 180.0
+    if -limit <= numeric <= limit:
+        return numeric
+    converted = numeric * GARMIN_SEMICIRCLE_TO_DEGREES
+    return converted if -limit <= converted <= limit else None
+
+
 def _approach_events(holes: pl.DataFrame, shots: pl.DataFrame) -> list[dict[str, Any]]:
     if (
         holes.is_empty()
@@ -260,18 +272,20 @@ def _approach_events(holes: pl.DataFrame, shots: pl.DataFrame) -> list[dict[str,
         ]
         if not all(isinstance(value, int | float) for value in values):
             continue
-        start_lat, start_lon, end_lat, end_lon, pin_lat, pin_lon = (
-            float(cast(int | float, value)) for value in values
-        )
-        if not (
-            -90 <= start_lat <= 90
-            and -90 <= end_lat <= 90
-            and -90 <= pin_lat <= 90
-            and -180 <= start_lon <= 180
-            and -180 <= end_lon <= 180
-            and -180 <= pin_lon <= 180
-        ):
+        start_lat = _coordinate_degrees(cast(int | float, values[0]), latitude=True)
+        start_lon = _coordinate_degrees(cast(int | float, values[1]), latitude=False)
+        end_lat = _coordinate_degrees(cast(int | float, values[2]), latitude=True)
+        end_lon = _coordinate_degrees(cast(int | float, values[3]), latitude=False)
+        pin_lat = _coordinate_degrees(cast(int | float, values[4]), latitude=True)
+        pin_lon = _coordinate_degrees(cast(int | float, values[5]), latitude=False)
+        if None in {start_lat, start_lon, end_lat, end_lon, pin_lat, pin_lon}:
             continue
+        assert start_lat is not None
+        assert start_lon is not None
+        assert end_lat is not None
+        assert end_lon is not None
+        assert pin_lat is not None
+        assert pin_lon is not None
         row["start_to_pin_m"] = _haversine(start_lat, start_lon, pin_lat, pin_lon)
         row["end_to_pin_m"] = _haversine(end_lat, end_lon, pin_lat, pin_lon)
         row["distance_reduction_m"] = row["start_to_pin_m"] - row["end_to_pin_m"]
@@ -280,6 +294,93 @@ def _approach_events(holes: pl.DataFrame, shots: pl.DataFrame) -> list[dict[str,
         )
         rows.append(row)
     return rows
+
+
+def build_club_approach_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.DataFrame:
+    """Summarize approach proximity and GIR by club and starting distance band."""
+
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for event in _approach_events(holes, shots):
+        club = str(event.get("club") or "Unknown").strip()
+        if not club or club.lower() == "unknown":
+            continue
+        groups[(club, str(event["bucket"]))].append(event)
+
+    rows: list[dict[str, Any]] = []
+    for (club, bucket), events in groups.items():
+        proximity = [float(event["end_to_pin_m"]) for event in events]
+        rows.append(
+            {
+                "club": club,
+                "distance_bucket": bucket,
+                "approaches": len(events),
+                "rounds": len({event["round_id"] for event in events}),
+                "avg_start_to_pin_m": round(
+                    sum(float(event["start_to_pin_m"]) for event in events) / len(events), 1
+                ),
+                "median_proximity_m": round(median(proximity), 1),
+                "avg_proximity_m": round(sum(proximity) / len(proximity), 1),
+                "proximity_stddev_m": round(pstdev(proximity), 1),
+                "gir_pct": round(
+                    sum(_as_bool(event.get("gir")) for event in events) / len(events) * 100, 2
+                ),
+            }
+        )
+    return (
+        pl.DataFrame(rows).sort(
+            ["distance_bucket", "approaches", "club"], descending=[False, True, False]
+        )
+        if rows
+        else pl.DataFrame()
+    )
+
+
+def _course_tee_club_options(
+    holes: pl.DataFrame, shots: pl.DataFrame, high_risk_holes: set[int]
+) -> list[dict[str, Any]]:
+    if not high_risk_holes:
+        return []
+    hole_rows = {(row["round_id"], row["hole_number"]): row for row in holes.to_dicts()}
+    groups: dict[tuple[int, str], list[dict[str, Any]]] = defaultdict(list)
+    for shot in shots.to_dicts():
+        if shot.get("shot_number") != 1:
+            continue
+        hole = hole_rows.get((shot.get("round_id"), shot.get("hole_number")))
+        if hole is None or hole.get("hole_number") not in high_risk_holes:
+            continue
+        club = str(shot.get("club") or "Unknown").strip()
+        if club.lower() == "unknown" or _number(hole.get("strokes")) is None:
+            continue
+        groups[(int(hole["hole_number"]), club)].append({**shot, **hole})
+
+    options: list[dict[str, Any]] = []
+    for (hole_number, club), events in groups.items():
+        if len(events) < 5:
+            continue
+        to_par = [float(event["strokes"]) - float(event["par"]) for event in events]
+        fairways = [
+            event.get("fairway_hit") for event in events if event.get("fairway_hit") is not None
+        ]
+        options.append(
+            {
+                "hole_number": hole_number,
+                "club": club,
+                "tee_shots": len(events),
+                "rounds": len({event["round_id"] for event in events}),
+                "avg_to_par": round(sum(to_par) / len(to_par), 2),
+                "double_or_worse_pct": round(
+                    sum(value >= 2 for value in to_par) / len(to_par) * 100, 2
+                ),
+                "fairway_hit_pct": round(
+                    sum(bool(value) for value in fairways) / len(fairways) * 100, 2
+                )
+                if fairways
+                else None,
+            }
+        )
+    return sorted(
+        options, key=lambda option: (option["hole_number"], -option["tee_shots"], option["club"])
+    )
 
 
 def _score_candidate(
@@ -616,9 +717,15 @@ def analyze_course(
     candidates = _tee_detector(scoped_rounds, scoped_holes, scoped_shots)
     candidates.sort(key=lambda item: (-item.priority_score, item.id))
     hole_stats = build_course_hole_stats(scoped_rounds, scoped_holes)
+    high_risk = hole_stats.head(5).to_dicts() if not hole_stats.is_empty() else []
     profile = {
         "course": course,
-        "high_risk_holes": hole_stats.head(5).to_dicts() if not hole_stats.is_empty() else [],
+        "high_risk_holes": high_risk,
+        "tee_club_options": _course_tee_club_options(
+            scoped_holes,
+            scoped_shots,
+            {int(row["hole_number"]) for row in high_risk},
+        ),
     }
     return AnalysisResult(
         analysis_type="course",

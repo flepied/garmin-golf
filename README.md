@@ -92,6 +92,7 @@ To inspect club usage by golf context instead of only raw inventory:
 ```bash
 uv run garmin-golf stats clubs --by-context
 uv run garmin-golf stats clubs --by-context --json
+uv run garmin-golf stats clubs --approach-accuracy --period last-12-months
 uv run garmin-golf stats clubs --course "Golf National ~ Aigle"
 uv run garmin-golf stats clubs --course "Golf National ~ Aigle" --hole 7 --by-context
 ```
@@ -99,6 +100,12 @@ uv run garmin-golf stats clubs --course "Golf National ~ Aigle" --hole 7 --by-co
 That view groups clubs by contexts such as par-3 tee shots, par-4 tee shots, par-4 approaches,
 par-5 second shots, short game, recovery, and putting. Add `--course` to focus on one course across
 all recorded rounds there, and `--hole` to narrow further to one hole on that course.
+
+Use `stats clubs --approach-accuracy` for club-specific approach distance bands,
+median proximity to the recorded pin, proximity dispersion, and GIR. It requires
+valid Garmin start/end/pin coordinates and supports the same date, course, and
+hole filters. `analyze course --json` includes tee-club outcome rows for its
+highest-risk holes when each club has at least five recorded tee shots.
 
 For agent or script consumption, most commands also support `--json`:
 

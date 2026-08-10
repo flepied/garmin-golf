@@ -12,7 +12,13 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from .analysis import analyze_course, analyze_data_quality, analyze_player, analyze_round
+from .analysis import (
+    analyze_course,
+    analyze_data_quality,
+    analyze_player,
+    analyze_round,
+    build_club_approach_stats,
+)
 from .analysis.experiments import (
     cancel_experiment,
     get_experiment,
@@ -168,6 +174,11 @@ BY_CONTEXT_OPTION = typer.Option(
     False,
     "--by-context",
     help="Group club performance by golf context such as tee shots and approaches.",
+)
+APPROACH_ACCURACY_OPTION = typer.Option(
+    False,
+    "--approach-accuracy",
+    help="Show approach proximity and GIR by club and starting distance band.",
 )
 ROUND_MATCH_TOLERANCE = timedelta(hours=2)
 TableJustify = Literal["default", "left", "center", "right", "full"]
@@ -812,11 +823,15 @@ def stats_clubs(
     date_to: str | None = DATE_TO_OPTION,
     period: str | None = PERIOD_OPTION,
     by_context: bool = BY_CONTEXT_OPTION,
+    approach_accuracy: bool = APPROACH_ACCURACY_OPTION,
     course: str | None = COURSE_OPTION,
     hole: int | None = HOLE_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """List observed club ids with inferred and configured names."""
+
+    if by_context and approach_accuracy:
+        raise typer.BadParameter("Use either --by-context or --approach-accuracy, not both.")
 
     storage = _storage()
     resolved_from, resolved_to = _resolve_date_window(
@@ -858,6 +873,22 @@ def stats_clubs(
             _emit_json([])
             return
         _console().print(f"No club data is available for {_club_stats_scope_label(course, hole)}.")
+        return
+
+    if approach_accuracy:
+        approach_stats = build_club_approach_stats(filtered_holes, resolved_shots)
+        if approach_stats.is_empty():
+            if json_output:
+                _emit_json([])
+                return
+            _console().print(
+                f"No approach geometry is available for {_club_stats_scope_label(course, hole)}."
+            )
+            return
+        if json_output:
+            _emit_json(approach_stats)
+            return
+        _render_club_approach_table(approach_stats)
         return
 
     if by_context:
@@ -1426,6 +1457,26 @@ def _render_club_context_table(context_stats: pl.DataFrame) -> None:
         table.add_column(column, justify=justify)
 
     for row in context_stats.iter_rows(named=True):
+        table.add_row(*[_display_value(row.get(column)) for column in columns])
+    _console().print(table)
+
+
+def _render_club_approach_table(approach_stats: pl.DataFrame) -> None:
+    table = Table(title="Club Approach Accuracy")
+    columns = [
+        "club",
+        "distance_bucket",
+        "approaches",
+        "rounds",
+        "median_proximity_m",
+        "proximity_stddev_m",
+        "gir_pct",
+    ]
+    for column in columns:
+        table.add_column(
+            column, justify="right" if column not in {"club", "distance_bucket"} else "left"
+        )
+    for row in approach_stats.iter_rows(named=True):
         table.add_row(*[_display_value(row.get(column)) for column in columns])
     _console().print(table)
 

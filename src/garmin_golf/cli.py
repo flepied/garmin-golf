@@ -17,6 +17,7 @@ from .analysis import (
     analyze_data_quality,
     analyze_player,
     analyze_round,
+    build_approach_direction_stats,
     build_club_approach_stats,
 )
 from .analysis.experiments import (
@@ -169,6 +170,7 @@ TREND_METRIC_OPTION = typer.Option(
 COURSE_REQUIRED_OPTION = typer.Option(..., "--course", help="Exact course name to analyze.")
 COURSE_OPTION = typer.Option(None, "--course", help="Exact course name to analyze.")
 HOLE_OPTION = typer.Option(None, "--hole", min=1, max=18, help="Single hole number to analyze.")
+CLUBS_OPTION = typer.Option(None, "--clubs", help="Comma-separated clubs, for example 9,PW,GW,SW.")
 JSON_OPTION = typer.Option(False, "--json", help="Emit structured JSON to stdout.")
 BY_CONTEXT_OPTION = typer.Option(
     False,
@@ -817,6 +819,71 @@ def stats_tee_shots(
     _render_tee_shots_table(tee_shots)
 
 
+@stats_app.command("approaches")
+def stats_approaches(
+    round_id: int | None = ROUND_ID_OPTION,
+    last_round: bool = LAST_ROUND_OPTION,
+    date_from: str | None = DATE_FROM_OPTION,
+    date_to: str | None = DATE_TO_OPTION,
+    period: str | None = PERIOD_OPTION,
+    clubs: str | None = CLUBS_OPTION,
+    by_direction: bool = typer.Option(
+        False, "--by-direction", help="Sort rows by left/right/on-line direction."
+    ),
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Show approach distance, target-line direction, and GIR by shot."""
+
+    if (round_id is not None or last_round) and (
+        date_from is not None or date_to is not None or period is not None
+    ):
+        raise typer.BadParameter("Use a round selector or date filters, not both.")
+    storage = _storage()
+    rounds, aliases = _canonicalize_rounds(storage.read_table("rounds"))
+    if rounds.is_empty():
+        if json_output:
+            _emit_json([])
+            return
+        _console().print("No local rounds found. Run `garmin-golf mirror scorecards ...` first.")
+        return
+
+    all_holes = storage.read_table("holes")
+    all_shots = _shots_with_configured_club_names(storage.read_table("shots"))
+    if round_id is not None or last_round:
+        resolved_round_id = _resolve_round_selector(
+            rounds, aliases, round_id=round_id, last_round=last_round
+        )
+        holes = all_holes.filter(pl.col("round_id") == resolved_round_id)
+        shots = all_shots.filter(pl.col("round_id") == resolved_round_id)
+    else:
+        resolved_from, resolved_to = _resolve_date_window(
+            date_from=date_from, date_to=date_to, period=period
+        )
+        _, holes, shots = _filter_stats_tables(
+            rounds,
+            all_holes,
+            all_shots,
+            date_from=resolved_from,
+            date_to=resolved_to,
+        )
+
+    approach_rows = build_approach_direction_stats(
+        holes, shots, clubs.split(",") if clubs else None
+    )
+    if approach_rows.is_empty():
+        if json_output:
+            _emit_json([])
+            return
+        _console().print("No approach geometry is available for this selection.")
+        return
+    if by_direction:
+        approach_rows = approach_rows.sort(["direction", "hole_number", "shot_number"])
+    if json_output:
+        _emit_json(approach_rows)
+        return
+    _render_approach_direction_table(approach_rows)
+
+
 @stats_app.command("clubs")
 def stats_clubs(
     date_from: str | None = DATE_FROM_OPTION,
@@ -1146,6 +1213,7 @@ def stats_round(
     club_table = _build_round_clubs_table(shots)
     shot_table = _build_round_shots_table(shots)
     second_shots = build_second_shot_stats(holes, shots)
+    approaches = build_approach_direction_stats(holes, shots)
     if json_output:
         _emit_json(
             {
@@ -1154,6 +1222,7 @@ def stats_round(
                 "clubs": club_table,
                 "shots": shot_table,
                 "second_shots": second_shots,
+                "approaches": approaches,
             }
         )
         return
@@ -1170,6 +1239,8 @@ def stats_round(
 
     if not second_shots.is_empty():
         _render_second_shots_table(second_shots, title=f"{round_title}: Second Shots")
+    if not approaches.is_empty():
+        _render_approach_direction_table(approaches, title=f"{round_title}: Approaches")
 
 
 def _render_mapping(title: str, values: Mapping[str, object]) -> None:
@@ -1400,6 +1471,28 @@ def _render_round_shots_table(title: str, shots: pl.DataFrame) -> None:
     _console().print(table)
 
 
+def _render_approach_direction_table(
+    approaches: pl.DataFrame, *, title: str = "Approaches"
+) -> None:
+    table = Table(title=title)
+    columns = [
+        "hole_number",
+        "shot_number",
+        "club",
+        "start_distance_to_pin_m",
+        "direction",
+        "lateral_to_target_m",
+        "longitudinal_to_target_m",
+        "end_distance_to_pin_m",
+        "gir",
+    ]
+    for column in columns:
+        table.add_column(column, justify="left" if column in {"club", "direction"} else "right")
+    for row in approaches.iter_rows(named=True):
+        table.add_row(*[_display_value(row.get(column)) for column in columns])
+    _console().print(table)
+
+
 def _render_club_inventory_table(club_inventory: pl.DataFrame) -> None:
     table = Table(title="Clubs")
     columns = [
@@ -1470,6 +1563,11 @@ def _render_club_approach_table(approach_stats: pl.DataFrame) -> None:
         "rounds",
         "median_proximity_m",
         "proximity_stddev_m",
+        "left_shots",
+        "right_shots",
+        "on_line_shots",
+        "left_pct",
+        "right_pct",
         "gir_pct",
     ]
     for column in columns:

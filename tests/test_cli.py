@@ -1692,7 +1692,7 @@ def test_stats_round_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> N
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert set(payload) == {"summary", "holes", "clubs", "shots", "second_shots"}
+    assert set(payload) == {"summary", "holes", "clubs", "shots", "second_shots", "approaches"}
     assert payload["summary"]["round_id"] == 1001
     assert payload["holes"][0]["hole_number"] == 1
     assert {row["club"] for row in payload["clubs"]} == {"Driver", "8 Iron"}

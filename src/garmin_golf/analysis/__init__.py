@@ -5,6 +5,7 @@ from .engine import (
     analyze_data_quality,
     analyze_player,
     analyze_round,
+    build_approach_direction_stats,
     build_club_approach_stats,
 )
 
@@ -13,5 +14,6 @@ __all__ = [
     "analyze_data_quality",
     "analyze_player",
     "analyze_round",
+    "build_approach_direction_stats",
     "build_club_approach_stats",
 ]

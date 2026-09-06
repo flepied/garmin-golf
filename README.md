@@ -92,6 +92,7 @@ To inspect club usage by golf context instead of only raw inventory:
 ```bash
 uv run garmin-golf stats clubs --by-context
 uv run garmin-golf stats clubs --by-context --json
+uv run garmin-golf stats clubs --approach-accuracy --period last-12-months
 uv run garmin-golf stats clubs --course "Golf National ~ Aigle"
 uv run garmin-golf stats clubs --course "Golf National ~ Aigle" --hole 7 --by-context
 ```
@@ -99,6 +100,12 @@ uv run garmin-golf stats clubs --course "Golf National ~ Aigle" --hole 7 --by-co
 That view groups clubs by contexts such as par-3 tee shots, par-4 tee shots, par-4 approaches,
 par-5 second shots, short game, recovery, and putting. Add `--course` to focus on one course across
 all recorded rounds there, and `--hole` to narrow further to one hole on that course.
+
+Use `stats clubs --approach-accuracy` for club-specific approach distance bands,
+median proximity to the recorded pin, proximity dispersion, and GIR. It requires
+valid Garmin start/end/pin coordinates and supports the same date, course, and
+hole filters. `analyze course --json` includes tee-club outcome rows for its
+highest-risk holes when each club has at least five recorded tee shots.
 
 For agent or script consumption, most commands also support `--json`:
 
@@ -111,6 +118,26 @@ uv run garmin-golf stats clubs --json
 ```
 
 JSON mode emits structured data only and skips Rich tables and prose formatting.
+
+## Prioritized analysis
+
+The deterministic analysis engine selects one current priority from local history,
+with sample sizes, limitations, and a measurable experiment rather than an
+unbounded coaching response:
+
+```bash
+uv run garmin-golf analyze data-quality --json
+uv run garmin-golf analyze player --period last-12-months --json
+uv run garmin-golf analyze round --last-round
+uv run garmin-golf analyze course --course "Golf National ~ Aigle" --json
+uv run garmin-golf experiment start --insight-id scoring_double_or_worse_concentration
+uv run garmin-golf experiment list --json
+```
+
+`analyze player` defaults to the last 12 months. Existing `stats` commands remain
+available for detailed raw statistics. Experiments preserve their baseline locally
+and use a five-round review horizon; Garmin data cannot verify a golfer's intended
+target or strategy, so results remain qualified associations.
 
 To review your history on a specific course and identify the hardest holes:
 

@@ -86,6 +86,62 @@ def test_player_analysis_does_not_recommend_unknown_club() -> None:
     assert not any(candidate.category == "tee_shot" for candidate in result.insights)
 
 
+def test_player_profile_reports_tee_and_approach_direction() -> None:
+    semicircle = 2**31 / 180.0
+    rounds = _rounds(10)
+    holes = pl.DataFrame(
+        [
+            {
+                "round_id": round_id,
+                "hole_number": 1,
+                "par": 4,
+                "strokes": 4,
+                "gir": round_id <= 5,
+                "fairway_shot_outcome": "RIGHT" if round_id <= 6 else "LEFT",
+                "pin_position_lat": 48.0 * semicircle,
+                "pin_position_lon": 2.001 * semicircle,
+            }
+            for round_id in range(1, 11)
+        ]
+    )
+    shots = pl.DataFrame(
+        [
+            {
+                "round_id": round_id,
+                "hole_number": 1,
+                "shot_number": 1,
+                "club": "Driver",
+            }
+            for round_id in range(1, 11)
+        ]
+        + [
+            {
+                "round_id": round_id,
+                "hole_number": 1,
+                "shot_number": 2,
+                "shot_type": "APPROACH",
+                "club": "8 Iron",
+                "start_lat": 48.0 * semicircle,
+                "start_lon": 2.0 * semicircle,
+                "end_lat": (47.9999 if round_id <= 6 else 48.0001) * semicircle,
+                "end_lon": 2.0005 * semicircle,
+            }
+            for round_id in range(1, 11)
+        ]
+    )
+
+    result = analyze_player(rounds, holes, shots)
+
+    tee = result.player_profile["tee_direction"]
+    assert tee["bias"] == "right"
+    assert tee["counts"]["miss_right"] == 6
+    assert tee["counts"]["miss_left"] == 4
+    approach = result.player_profile["approach_direction"]
+    assert approach["bias"] == "right"
+    assert approach["by_direction"]["right"]["shots"] == 6
+    assert approach["by_direction"]["left"]["shots"] == 4
+
+
 def test_club_approach_stats_reports_proximity_and_gir() -> None:
     semicircle = 2**31 / 180.0
     holes = pl.DataFrame(

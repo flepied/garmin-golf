@@ -12,7 +12,7 @@ import polars as pl
 from ..stats import build_course_hole_stats, build_summary_stats
 from .models import AnalysisResult, AnalysisStatus, Candidate, Confidence, DomainQuality, Scope
 
-ANALYSIS_VERSION = "1.0"
+ANALYSIS_VERSION = "1.1"
 APPROACH_BUCKETS = (
     (0.0, 50.0, "< 50 m"),
     (50.0, 75.0, "50–75 m"),
@@ -220,6 +220,40 @@ def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 6371008.8 * 2 * asin(sqrt(a))
 
 
+def _local_vector(
+    start_lat: float, start_lon: float, end_lat: float, end_lon: float
+) -> tuple[float, float]:
+    """Return a small-distance longitude/latitude vector in metres."""
+
+    earth_radius = 6371008.8
+    reference_lat = radians((start_lat + end_lat) / 2)
+    east = radians(end_lon - start_lon) * earth_radius * cos(reference_lat)
+    north = radians(end_lat - start_lat) * earth_radius
+    return east, north
+
+
+def _approach_direction(
+    start_lat: float,
+    start_lon: float,
+    end_lat: float,
+    end_lon: float,
+    pin_lat: float,
+    pin_lon: float,
+) -> tuple[str, float, float]:
+    """Classify the finish relative to the start-to-pin target line."""
+
+    target_east, target_north = _local_vector(start_lat, start_lon, pin_lat, pin_lon)
+    shot_east, shot_north = _local_vector(start_lat, start_lon, end_lat, end_lon)
+    target_length = sqrt(target_east**2 + target_north**2)
+    if target_length == 0:
+        return "on_line", 0.0, 0.0
+    lateral = (target_east * shot_north - target_north * shot_east) / target_length
+    longitudinal = (target_east * shot_east + target_north * shot_north) / target_length
+    # A small tolerance prevents GPS rounding from becoming a false direction.
+    direction = "left" if lateral > 3 else "right" if lateral < -3 else "on_line"
+    return direction, lateral, longitudinal
+
+
 def _coordinate_degrees(value: int | float, *, latitude: bool) -> float | None:
     """Accept Garmin semicircles as well as decimal-degree coordinates."""
 
@@ -289,6 +323,12 @@ def _approach_events(holes: pl.DataFrame, shots: pl.DataFrame) -> list[dict[str,
         row["start_to_pin_m"] = _haversine(start_lat, start_lon, pin_lat, pin_lon)
         row["end_to_pin_m"] = _haversine(end_lat, end_lon, pin_lat, pin_lon)
         row["distance_reduction_m"] = row["start_to_pin_m"] - row["end_to_pin_m"]
+        direction, lateral_m, longitudinal_m = _approach_direction(
+            start_lat, start_lon, end_lat, end_lon, pin_lat, pin_lon
+        )
+        row["direction"] = direction
+        row["lateral_to_target_m"] = lateral_m
+        row["longitudinal_to_target_m"] = longitudinal_m
         row["bucket"] = next(
             label for low, high, label in APPROACH_BUCKETS if low <= row["start_to_pin_m"] < high
         )
@@ -309,6 +349,10 @@ def build_club_approach_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.Da
     rows: list[dict[str, Any]] = []
     for (club, bucket), events in groups.items():
         proximity = [float(event["end_to_pin_m"]) for event in events]
+        direction_counts = {
+            direction: sum(event["direction"] == direction for event in events)
+            for direction in ("left", "right", "on_line")
+        }
         rows.append(
             {
                 "club": club,
@@ -321,6 +365,11 @@ def build_club_approach_stats(holes: pl.DataFrame, shots: pl.DataFrame) -> pl.Da
                 "median_proximity_m": round(median(proximity), 1),
                 "avg_proximity_m": round(sum(proximity) / len(proximity), 1),
                 "proximity_stddev_m": round(pstdev(proximity), 1),
+                "left_shots": direction_counts["left"],
+                "right_shots": direction_counts["right"],
+                "on_line_shots": direction_counts["on_line"],
+                "right_pct": round(direction_counts["right"] / len(events) * 100, 1),
+                "left_pct": round(direction_counts["left"] / len(events) * 100, 1),
                 "gir_pct": round(
                     sum(_as_bool(event.get("gir")) for event in events) / len(events) * 100, 2
                 ),
@@ -652,6 +701,149 @@ def _approach_detector(
     return candidates
 
 
+def _tee_direction_profile(holes: pl.DataFrame, shots: pl.DataFrame) -> dict[str, Any]:
+    """Summarize Garmin's left/right outcomes for par-4/5 first shots."""
+
+    counts = {"fairway": 0, "miss_left": 0, "miss_right": 0, "other": 0}
+    by_par: dict[str, dict[str, int]] = {}
+    if holes.is_empty() or shots.is_empty():
+        return {"shots": 0, "counts": counts, "directional_misses": 0, "bias": None, "by_par": {}}
+
+    hole_rows = {(row["round_id"], row["hole_number"]): row for row in holes.to_dicts()}
+    for shot in shots.to_dicts():
+        if shot.get("shot_number") != 1:
+            continue
+        hole = hole_rows.get((shot.get("round_id"), shot.get("hole_number")))
+        if hole is None or hole.get("par") not in (4, 5):
+            continue
+        outcome = str(hole.get("fairway_shot_outcome") or "").upper()
+        result = (
+            "fairway"
+            if outcome == "HIT" or (not outcome and _as_bool(hole.get("fairway_hit")))
+            else "miss_right"
+            if outcome == "RIGHT"
+            else "miss_left"
+            if outcome == "LEFT"
+            else "other"
+        )
+        counts[result] += 1
+        par_key = str(hole["par"])
+        par_counts = by_par.setdefault(
+            par_key, {"fairway": 0, "miss_left": 0, "miss_right": 0, "other": 0}
+        )
+        par_counts[result] += 1
+
+    directional = counts["miss_left"] + counts["miss_right"]
+    return {
+        "shots": sum(counts.values()),
+        "counts": counts,
+        "directional_misses": directional,
+        "left_pct_of_directional_misses": round(counts["miss_left"] / directional * 100, 2)
+        if directional
+        else None,
+        "right_pct_of_directional_misses": round(counts["miss_right"] / directional * 100, 2)
+        if directional
+        else None,
+        "bias": (
+            "right"
+            if counts["miss_right"] > counts["miss_left"]
+            else "left"
+            if counts["miss_left"] > counts["miss_right"]
+            else "balanced"
+        )
+        if directional
+        else None,
+        "by_par": by_par,
+    }
+
+
+def _approach_direction_profile(holes: pl.DataFrame, shots: pl.DataFrame) -> dict[str, Any]:
+    """Summarize approach direction and GIR using the recorded pin geometry."""
+
+    events = _approach_events(holes, shots)
+    directions: dict[str, list[dict[str, Any]]] = {"left": [], "right": [], "on_line": []}
+    for event in events:
+        direction = str(event["direction"])
+        if direction in directions:
+            directions[direction].append(event)
+
+    by_direction: dict[str, dict[str, Any]] = {}
+    for direction, rows in directions.items():
+        gir_count = sum(_as_bool(row.get("gir")) for row in rows)
+        by_direction[direction] = {
+            "shots": len(rows),
+            "gir": gir_count,
+            "gir_pct": round(gir_count / len(rows) * 100, 2) if rows else None,
+            "avg_lateral_m": round(
+                sum(float(row["lateral_to_target_m"]) for row in rows) / len(rows), 2
+            )
+            if rows
+            else None,
+        }
+    directional = len(directions["left"]) + len(directions["right"])
+    return {
+        "shots": len(events),
+        "directional_shots": directional,
+        "left_pct_of_directional_shots": round(len(directions["left"]) / directional * 100, 2)
+        if directional
+        else None,
+        "right_pct_of_directional_shots": round(len(directions["right"]) / directional * 100, 2)
+        if directional
+        else None,
+        "bias": (
+            "right"
+            if len(directions["right"]) > len(directions["left"])
+            else "left"
+            if len(directions["left"]) > len(directions["right"])
+            else "balanced"
+        )
+        if directional
+        else None,
+        "by_direction": by_direction,
+    }
+
+
+def build_approach_direction_stats(
+    holes: pl.DataFrame, shots: pl.DataFrame, clubs: list[str] | None = None
+) -> pl.DataFrame:
+    """Return one geometry-enriched row for each recorded approach shot."""
+
+    aliases = {
+        "9": "9 iron",
+        "pw": "pitching wedge",
+        "gw": "gap wedge",
+        "sw": "sand wedge",
+    }
+    requested = {
+        aliases.get(value.strip().lower(), value.strip().lower())
+        for value in (clubs or [])
+        if value.strip()
+    }
+    rows: list[dict[str, Any]] = []
+    for event in _approach_events(holes, shots):
+        club = str(event.get("club") or "Unknown")
+        if requested and club.lower() not in requested:
+            continue
+        rows.append(
+            {
+                "round_id": event["round_id"],
+                "hole_number": event["hole_number"],
+                "shot_number": event["shot_number"],
+                "club": club,
+                "shot_type": event.get("shot_type"),
+                "start_distance_to_pin_m": round(float(event["start_to_pin_m"]), 1),
+                "direction": event["direction"],
+                "lateral_to_target_m": round(float(event["lateral_to_target_m"]), 1),
+                "longitudinal_to_target_m": round(float(event["longitudinal_to_target_m"]), 1),
+                "end_distance_to_pin_m": round(float(event["end_to_pin_m"]), 1),
+                "gir": event.get("gir"),
+            }
+        )
+    if not rows:
+        return pl.DataFrame()
+    return pl.DataFrame(rows).sort(["round_id", "hole_number", "shot_number"])
+
+
 def _profile(rounds: pl.DataFrame, holes: pl.DataFrame, shots: pl.DataFrame) -> dict[str, Any]:
     summary = build_summary_stats(rounds, holes, shots)
     double_pct = float(summary.get("double_bogey_or_worse_pct", 0))
@@ -660,6 +852,8 @@ def _profile(rounds: pl.DataFrame, holes: pl.DataFrame, shots: pl.DataFrame) -> 
         "scoring_shape": "catastrophe_driven" if double_pct >= 20 else "accumulation_driven",
         "volatility": "volatile" if double_pct >= 20 else "stable",
         "penalty_profile": "penalty_heavy" if penalties >= 1 else "penalty_light",
+        "tee_direction": _tee_direction_profile(holes, shots),
+        "approach_direction": _approach_direction_profile(holes, shots),
         "summary": summary,
     }
 

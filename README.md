@@ -107,6 +107,24 @@ valid Garmin start/end/pin coordinates and supports the same date, course, and
 hole filters. `analyze course --json` includes tee-club outcome rows for its
 highest-risk holes when each club has at least five recorded tee shots.
 
+For shot-by-shot approach direction, use:
+
+```bash
+uv run garmin-golf stats approaches --last-round --clubs 9,PW,GW,SW --by-direction
+uv run garmin-golf stats approaches --period last-12-months --json
+```
+
+The command reports the hole, club, starting distance to the pin, final
+`left`/`right`/`on_line` direction, lateral and longitudinal target-line error,
+finishing distance to the pin, and GIR. `stats round --json` includes the same
+rows under `approaches`. `stats clubs --approach-accuracy` adds left/right/on-line
+counts and percentages to each club and distance-band row.
+
+`lateral_to_target_m` is signed: positive values are left of the start-to-pin
+line and negative values are right; values between -3 m and +3 m are classified
+as `on_line`. This is the final position relative to that line, not proof that
+the ball started left or right of the intended target line.
+
 For agent or script consumption, most commands also support `--json`:
 
 ```bash
@@ -138,6 +156,20 @@ uv run garmin-golf experiment list --json
 available for detailed raw statistics. Experiments preserve their baseline locally
 and use a five-round review horizon; Garmin data cannot verify a golfer's intended
 target or strategy, so results remain qualified associations.
+
+The JSON returned by `analyze player` includes direction profiles in
+`player_profile.tee_direction` and `player_profile.approach_direction`:
+
+- `tee_direction` summarizes Garmin's fairway, left, and right outcomes for first
+  shots on par 4s and par 5s, including overall and par-specific breakdowns.
+- `approach_direction` classifies approach finishes left, right, or on-line
+  relative to the start-to-recorded-pin line. It also reports GIR counts and
+  percentages by direction.
+
+Approach direction is geometry-derived and uses a 3-metre lateral tolerance to
+avoid treating coordinate rounding as a miss. It describes the recorded finish,
+not necessarily the player's intended target; wind, lie, hazards, and deliberate
+shot shape are not available in the Garmin data.
 
 To review your history on a specific course and identify the hardest holes:
 

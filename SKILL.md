@@ -112,6 +112,16 @@ Current deterministic detectors cover double-or-worse concentration, tee-shot
 miss-direction cost, and approach distance-band weakness when geometry coverage
 is usable. An `Unknown` Garmin club label is not a valid tee-club recommendation.
 
+`analyze player --json` also exposes direction profiles under
+`player_profile.tee_direction` and `player_profile.approach_direction`. The tee
+profile uses Garmin's authoritative `HIT`, `LEFT`, and `RIGHT` fairway outcomes
+for first shots on par 4s and par 5s. The approach profile uses the shot's GPS
+start/end coordinates and the hole's recorded pin to classify the finish as
+left, right, or on-line relative to the start-to-pin line; it includes GIR
+counts and percentages for each direction. Approach classification has a
+3-metre lateral tolerance. Treat these as historical tendencies, not proof of
+aim, swing path, wind effect, or intent.
+
 ### Experiments
 
 ```bash
@@ -141,6 +151,7 @@ state that limitation when interpreting a review.
 | How accurate is each club into greens? | `stats clubs --approach-accuracy --period last-12-months --json` | Compare clubs within the same `distance_bucket` using approaches, rounds, median proximity, dispersion, and GIR. Treat small rows as exploratory and do not compare clubs across different buckets. |
 | Which club/context is costly overall? | `stats clubs --by-context --period last-12-months --json` | Find repeated contexts with high `avg_to_par` or double/bogey rates, then propose a practice or conservative strategy experiment. This is association, not proof that the club caused the score. |
 | Which first-shot miss costs the most? | `stats tee-shots --period last-12-months --json` | Compare first-shot club, distance, and resulting hole outcomes for `fairway`, `miss_left`, `miss_right`, `missed_fairway`, `no_fairway`, and `unknown`. This command is global for the selected date range; it cannot isolate one course or hole. |
+| Do I tend to miss left or right? | `analyze player --period last-12-months --json` | Read `player_profile.tee_direction` for par-4/5 first shots and `player_profile.approach_direction` for GPS-derived approach direction and GIR by direction. Treat small samples as exploratory and do not infer intended aim. |
 | Are second shots on par 4s/5s a problem? | `stats second-shots --period last-12-months --json` | Compare club usage, distance, and hole outcomes by par type and inferred second-shot start: `fairway`, `off_fairway`, `no_fairway`, or `unknown`. This command is global for the selected date range; it cannot isolate one course or hole. |
 | What happened in a bad or good round? | `stats round --round-id <id> --json` | Review each hole's score, GIR, FIR, putts, penalties, clubs, and par-4/5 second shots; identify candidate turning points while acknowledging missing intent and conditions. |
 
@@ -308,6 +319,7 @@ uv run garmin-golf stats second-shots --json
 uv run garmin-golf stats second-shots --period last-12-months --json
 uv run garmin-golf stats tee-shots --json
 uv run garmin-golf stats tee-shots --period last-12-months --json
+uv run garmin-golf stats approaches --last-round --clubs 9,PW,GW,SW --by-direction --json
 uv run garmin-golf stats clubs --json
 uv run garmin-golf stats clubs --period last-12-months --json
 uv run garmin-golf stats clubs --from 2025-01-01 --to 2025-12-31 --json
@@ -319,13 +331,25 @@ uv run garmin-golf stats clubs --course "Golf National ~ Aigle" --hole 7 --by-co
 
 Use `stats second-shots` when the user wants club usage and outcomes on second shots for par 4s and par 5s. It derives `inferred_start_lie` for the second shot from the tee-shot fairway result: `fairway`, `off_fairway`, `no_fairway`, or `unknown`. These are not confirmed rough/bunker lies; they only describe the preceding tee shot's fairway result.
 Use `stats tee-shots` when the user wants to analyze first-shot club choice and the cost of a fairway, left miss, or right miss. `fairway_result` comes from Garmin's tee-shot outcome; it is the authoritative place to compare miss direction. A `missed_fairway` result does not prove the ball was in rough—it may be any off-fairway location.
+Use `stats approaches` for shot-by-shot approach direction. It reports hole,
+club, starting distance to the recorded pin, `left`/`right`/`on_line` direction,
+lateral and longitudinal target-line error, finishing proximity, and GIR. Use
+`--last-round`, `--round-id`, or date filters; `--clubs` accepts comma-separated
+names and the aliases `9`, `PW`, `GW`, and `SW`; `--by-direction` sorts the
+detail rows by direction. The same detail rows are available as `approaches`
+in `stats round --json`. `lateral_to_target_m` is positive to the left of the
+start-to-pin line and negative to the right; values from -3 m through +3 m are
+`on_line`. It measures final position only and cannot establish whether the
+ball initially started left or right of the intended target.
+Use `analyze player` when the user wants an overall left/right tendency. Its tee profile covers par-4/5 first shots; its approach profile derives lateral direction from the GPS target line and reports GIR by direction. Do not call a direction a swing fault or assume it was unintended.
 Use `stats clubs` when club labels look suspicious or need bag-specific overrides; it exposes observed `club_id` values, inferred names, configured names, counts, average distances, and distance dispersion (`distance_stddev_m`) based on the same outlier-trimmed samples.
 Use `stats clubs --by-context` when the user wants club performance split by contexts such as par-3 tee shots, par-4 tee shots, par-4 approaches, par-5 second shots, short game, recovery, and putting.
 Use `stats clubs --approach-accuracy` when the user wants approach precision by
 club. It reports geometry-derived proximity to the recorded pin and GIR by
 starting-distance band; it excludes `Unknown` clubs and requires valid Garmin
-coordinates. Large proximity values can reflect recovery intent, wind, lie, or
-an intended lay-up, so do not infer a swing cause.
+coordinates. It also reports left/right/on-line counts and percentages for each
+club and distance band. Large proximity values can reflect recovery intent,
+wind, lie, or an intended lay-up, so do not infer a swing cause.
 Add `--course` when the user wants club usage only on one course across all recorded rounds there. Add `--hole` to narrow further to one specific hole, optionally combined with `--by-context`.
 
 ### Course analysis

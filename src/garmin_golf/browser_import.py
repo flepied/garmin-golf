@@ -77,7 +77,14 @@ def import_browser_export_payload(
         "rounds",
         round_rows,
         unique_by=["round_id"],
-        preserve_columns=["exclude_from_stats", "comment"],
+        preserve_columns=[
+            "exclude_from_stats",
+            "comment",
+            "wind_speed_kmh",
+            "wind_dir_deg",
+            "temp_c",
+            "source",
+        ],
     )
     storage.upsert_rows("holes", hole_rows, unique_by=["round_id", "hole_number"])
     storage.upsert_rows("shots", shot_rows, unique_by=["round_id", "hole_number", "shot_number"])

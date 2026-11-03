@@ -70,9 +70,10 @@ For any coaching response:
 
 Treat small samples as exploratory. A useful default is to call out fewer than
 10 shots or fewer than 5 rounds explicitly; never present it as a reliable
-club-selection rule. The CLI does not record weather, wind, pin position for
-every shot, intended target, hazard geometry, or whether a player deliberately
-chose a recovery. It therefore supports personal historical tendencies, not a
+club-selection rule. Optional round weather can be recorded explicitly with
+`stats annotate-round`; missing weather is unknown. The CLI does not record
+pin position for every shot, intended target, hazard geometry, or whether a
+player deliberately chose a recovery. It therefore supports personal historical tendencies, not a
 universal yardage book or swing diagnosis.
 
 ## Prioritized analysis engine
@@ -150,9 +151,9 @@ state that limitation when interpreting a review.
 | Is a club a sound option on a recurring hole? | `stats clubs --course "<exact course>" --hole <n> --json`, then the `--by-context` form | Use the first output for the club's observed distances and dispersion, then use the context output for scoring outcomes. Do not conflate all uses of a club on a hole with its tee-shot performance. |
 | How accurate is each club into greens? | `stats clubs --approach-accuracy --period last-12-months --json` | Compare clubs within the same `distance_bucket` using approaches, rounds, median proximity, dispersion, and GIR. Treat small rows as exploratory and do not compare clubs across different buckets. |
 | Which club/context is costly overall? | `stats clubs --by-context --period last-12-months --json` | Find repeated contexts with high `avg_to_par` or double/bogey rates, then propose a practice or conservative strategy experiment. This is association, not proof that the club caused the score. |
-| Which first-shot miss costs the most? | `stats tee-shots --period last-12-months --json` | Compare first-shot club, distance, and resulting hole outcomes for `fairway`, `miss_left`, `miss_right`, `missed_fairway`, `no_fairway`, and `unknown`. This command is global for the selected date range; it cannot isolate one course or hole. |
+| Which first-shot miss costs the most? | `stats tee-shots --period last-12-months --json` | Compare first-shot club, distance, and resulting hole outcomes for `fairway`, `miss_left`, `miss_right`, `missed_fairway`, `no_fairway`, and `unknown`. Add `--course` and/or `--hole` for a narrower comparison. |
 | Do I tend to miss left or right? | `analyze player --period last-12-months --json` | Read `player_profile.tee_direction` for par-4/5 first shots and `player_profile.approach_direction` for GPS-derived approach direction and GIR by direction. Treat small samples as exploratory and do not infer intended aim. |
-| Are second shots on par 4s/5s a problem? | `stats second-shots --period last-12-months --json` | Compare club usage, distance, and hole outcomes by par type and inferred second-shot start: `fairway`, `off_fairway`, `no_fairway`, or `unknown`. This command is global for the selected date range; it cannot isolate one course or hole. |
+| Are second shots on par 4s/5s a problem? | `stats second-shots --period last-12-months --json` | Compare club usage, distance, and hole outcomes by par type and inferred second-shot start: `fairway`, `off_fairway`, `no_fairway`, or `unknown`. Add `--course` and/or `--hole` for a narrower comparison. |
 | What happened in a bad or good round? | `stats round --round-id <id> --json` | Review each hole's score, GIR, FIR, putts, penalties, clubs, and par-4/5 second shots; identify candidate turning points while acknowledging missing intent and conditions. |
 
 ### Tee-club strategy example
@@ -195,7 +196,7 @@ historical context only where it changes the advice:
 ```bash
 uv run garmin-golf analyze round --round-id <id> --json
 uv run garmin-golf stats trends --window 5 --json
-uv run garmin-golf stats course --course "<exact course>" --json
+uv run garmin-golf stats round --round-id <id> --vs-baseline --last-rounds 20 --json
 ```
 
 Start with `analyze round --json` for the deterministic five-section debrief.
@@ -265,27 +266,20 @@ and `penalties_per_18`.
 ```bash
 uv run garmin-golf stats putting --json
 uv run garmin-golf stats putting --period last-12-months --json
+uv run garmin-golf stats putting --course "Golf National ~ Aigle" --hole 12 --last-rounds 20 --json
 ```
 
 Use `stats putting` when the user wants putting performance broken down by
 distance. It groups holes by first-putt starting distance bucket and reports
-hole counts plus one-putt, two-putt, and three-putt-or-worse rates.
+hole counts plus one-putt, two-putt, and three-putt-or-worse rates. Use
+`--course` and/or `--hole` to scope the samples. `--last-rounds N` selects
+the most recent N eligible rounds on the selected course before selecting
+the hole; it does not search backwards for N rounds with usable putting data.
 
-`stats round --round-id ...` does not include this distance-bucket table. It does
-report the selected round's `average_putt_distance_m`, and its shot breakdown
-includes the recorded putts. To inspect the distance buckets for one round,
-first get that round's `played_on` date from `stats rounds --json`, then use a
-date range containing only that date:
-
-```bash
-uv run garmin-golf stats putting --from YYYY-MM-DD --to YYYY-MM-DD --json
-```
-
-If there are multiple rounds on the same date, the date-filtered result combines
-them; explain that limitation rather than claiming the round has no
-putting-distance data. An empty `stats putting` result means no usable first-putt
-distance data was available for the selected date range—it does not contradict
-an `average_putt_distance_m` value shown by `stats round`.
+`stats round --round-id <id> --json` includes the selected round's `putting`
+distance buckets, without combining other rounds on the same date. An empty
+`putting` list means no usable first-putt distance data was recorded; it does
+not contradict an `average_putt_distance_m` summary from other recorded putts.
 
 ### Practice priorities
 
@@ -304,6 +298,8 @@ practice priorities and estimates strokes that could be saved per 18 holes.
 uv run garmin-golf stats rounds --json
 uv run garmin-golf stats round --round-id 22068626916 --json
 uv run garmin-golf stats round --last-round --json
+uv run garmin-golf stats round --last-round --vs-baseline --last-rounds 20 --json
+uv run garmin-golf stats rarity --last-round --metric front_back_gap --all --json
 uv run garmin-golf stats annotate-round --round-id 22068626916 --exclude-from-stats --comment "match play"
 uv run garmin-golf stats annotate-round --last-round --comment "windy"
 ```
@@ -311,6 +307,12 @@ uv run garmin-golf stats annotate-round --last-round --comment "windy"
 Run `stats rounds` first when the user does not know the round id. `stats round --json` returns the round summary, a hole-by-hole table, round club usage, the recorded shot sequence (`shots`) with club and distance on every hole, and par-4/par-5 second-shot breakdowns when shot data is available.
 Use `--last-round` instead of `--round-id` to select the most recently played local round. The two selectors are mutually exclusive.
 Use `stats annotate-round` to set local round metadata. `--exclude-from-stats` removes the round from aggregate multi-round stats, `--include-in-stats` restores it, `--comment` sets a freeform note, and `--clear-comment` removes the note. Single-round `stats round` remains available for excluded rounds.
+Optional weather fields are `--wind-speed-kmh`, `--wind-dir-deg` (meteorological
+wind-from direction, clockwise from north), `--temp-c`, and `--source` (for
+example `manual` or a named weather archive). They appear as `context` in the
+round view and survive browser re-import. `--clear-context` clears these fields.
+These are recorded values, not verified conditions for every shot or evidence
+that wind caused a distance change.
 
 ### Shot and club analysis
 
@@ -319,6 +321,7 @@ uv run garmin-golf stats second-shots --json
 uv run garmin-golf stats second-shots --period last-12-months --json
 uv run garmin-golf stats tee-shots --json
 uv run garmin-golf stats tee-shots --period last-12-months --json
+uv run garmin-golf stats tee-shots --course "Golf National ~ Aigle" --hole 12 --last-rounds 20 --json
 uv run garmin-golf stats approaches --last-round --clubs 9,PW,GW,SW --by-direction --json
 uv run garmin-golf stats clubs --json
 uv run garmin-golf stats clubs --period last-12-months --json
@@ -334,6 +337,7 @@ Use `stats tee-shots` when the user wants to analyze first-shot club choice and 
 Use `stats approaches` for shot-by-shot approach direction. It reports hole,
 club, starting distance to the recorded pin, `left`/`right`/`on_line` direction,
 lateral and longitudinal target-line error, finishing proximity, and GIR. Use
+`--course` and/or `--hole` to scope the selection, plus
 `--last-round`, `--round-id`, or date filters; `--clubs` accepts comma-separated
 names and the aliases `9`, `PW`, `GW`, and `SW`; `--by-direction` sorts the
 detail rows by direction. The same detail rows are available as `approaches`
@@ -361,10 +365,101 @@ uv run garmin-golf stats course --course "Golf National ~ Aigle" --period last-1
 ```
 
 Use `stats courses` to discover the exact course name. `stats course` returns a
-course summary, next-round focus, and hole difficulty table. Use plain output only
+course summary, next-round focus, hole difficulty table, and `tee_distances`
+per hole across all tee clubs. `--hole` narrows the hole and distance tables;
+the summary still describes the selected full rounds. `tee_distances` uses
+positive finite recorded first-shot distances without outlier trimming; it
+includes `n`, rounds, mean, median, and sample standard deviation. Do not mix
+these samples with the trimmed per-club averages. Its `observed_tee_bearing_deg`
+is a circular mean of recorded shot directions, with `geometry_n` and
+`direction_concentration` (0–1). This is a tee-shot proxy, not hole layout,
+hole length, intended aim, or hazard geometry. Small or dispersed samples
+cannot support a reliable orientation claim. Use plain output only
 when a human-readable table is more useful than machine-readable JSON.
 
+### Hole directions and weather
+
+For a wind question, use `stats round --round-id <id> --json` and read
+`geometry.holes`. This geometry comes from that recorded round, including
+excluded rounds, without needing a historical sample or external course map.
+`bearing_deg` is the direction of play in degrees clockwise from true north
+(0 north, 90 east, 180 south, 270 west). Coordinates are decimal degrees.
+
+Each hole declares its `source`: `tee_to_recorded_pin` is preferred;
+`tee_to_last_recorded_endpoint` falls back to the latest usable recorded
+endpoint; `tee_shot_start_to_end` uses only the tee shot. Missing valid GPS or
+a displacement under one metre yields null bearing and an `unavailable_reason`.
+The output includes the source round, endpoints, and straight-line distance.
+That distance is not the hole's playing length. These single-round observations
+are estimates of an axis, not a surveyed fairway layout or intended aim.
+
+For doglegs or a question about a particular shot, prefer that shot's
+`geometry.holes[].shots[].bearing_deg`. These non-putt rows include endpoints
+and recorded shot time/offset when available. Keep whole-hole and individual
+shot bearings distinct: a hole can turn while the wind stays the same.
+
+Combine this local geometry with weather supplied by the golfer, recorded in
+`context`, or obtained separately for the actual location, date and time.
+Use `geometry.played_on`, `start_time`, and GPS endpoints to select relevant
+weather; use per-shot times only when usable. If only a daily/round average is
+available, state that approximation rather than implying a measurement at
+each hole. Cite the weather source and preserve its wind-direction convention.
+The CLI itself does not fetch weather.
+
+Meteorological `wind_dir_deg` says where wind **comes from**, whereas bearings
+say where play **goes**. For speed V and angle difference between wind-from
+and play direction, `V * cos(difference)` is a headwind component (negative
+means tailwind); its absolute sine component describes crosswind magnitude.
+Convert degrees to radians for trigonometry. Wind from north is headwind for a
+northbound shot and tailwind for a southbound shot. Report oblique conditions
+when appropriate. Geometry plus sourced weather can support "likely played
+with a tailwind"; it does not establish that wind caused an observed distance
+or score difference. Never manufacture weather from score or shot distance.
+
+## Historical comparisons and rarity
+
+For "where did I lose strokes versus normal?", use
+`stats round --round-id <id> --vs-baseline --all --json`, or select a recent
+baseline with `--last-rounds N` or date filters. Read `vs_course_baseline.holes`
+for `baseline_avg_to_par`, `delta_to_par` (positive means more strokes),
+`rounds_played`, and `exploratory`. The baseline uses eligible rounds on the
+same course on strictly earlier dates; it omits the target, same-day rounds,
+and later rounds. The window includes actual dates and round IDs. No history
+means null deltas, not zero cost. An all-history `stats course` baseline includes
+the target if eligible, so use the round comparison for a debrief.
+
+Read `by_nine.front_nine` and `by_nine.back_nine` in `stats round` for strokes,
+to-par, putts and coverage. Check `complete` and `holes_scored`; partial nines
+are not comparable to complete nines.
+
+For "is this unusual?", use `stats rarity --round-id <id> --metric <metric>`.
+Metrics are `front_back_gap`, `average_to_par`, `gir_pct`, `fir_pct`,
+`three_putts_per_18`, and `penalties_per_18`. History is same-course, prior-date,
+and same recorded hole count; `--last-rounds N` selects the latest usable
+comparable rounds. `front_back_gap` is **front to-par minus back to-par** and
+requires both complete nines. A signed percentile is not the probability of
+an absolute gap at least that large. `average_to_par` is scaled to 18 holes.
+Percentiles use midrank ties and z-scores use sample standard deviation;
+constant or insufficient samples have a null z-score. Read `n`, `window`, and
+`exploratory`, and avoid causal claims or interpreting z as a normal-distribution
+tail probability. Rolling averages from `stats trends` do not measure rarity.
+
+Use these CLI primitives before writing ad-hoc Parquet scripts. If the CLI
+cannot answer a question, identify the specific missing capability; existing
+shot sequences are already available in `stats round` and do not require raw
+payload extraction. Recorded weather and shot bearings cannot alone attribute
+a scoring or distance change to wind.
+
 ## Date Filters
+
+- `stats` commands use **all eligible history by default** when no date filter
+  is supplied. Do not silently describe that as a 12-month baseline.
+- `analyze` defaults to the last 12 months. `analyze course --all` explicitly
+  selects all history; `analyze course --last-rounds N` selects recent rounds.
+- `stats course`, `stats clubs`, `stats trends`, `stats tee-shots`,
+  `stats second-shots`, and `stats putting` accept `--all` and `--last-rounds N`.
+  For course-scoped commands N is applied after course and exclusion filters. These window selectors are mutually exclusive with date
+  filters and with each other.
 
 - Supported `--period` values: `last-12-months`, `this-year`, `last-year`
 - Do not combine `--period` with `--from` or `--to`

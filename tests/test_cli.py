@@ -194,7 +194,12 @@ def test_stats_annotate_round_command_sets_exclusion_and_comment(
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload == {"round_id": 1, "exclude_from_stats": True, "comment": "windy"}
+    assert payload == {
+        "round_id": 1,
+        "exclude_from_stats": True,
+        "comment": "windy",
+        "context": {"wind_speed_kmh": None, "wind_dir_deg": None, "temp_c": None, "source": None},
+    }
     row = storage.read_table("rounds").row(0, named=True)
     assert row["exclude_from_stats"] is True
     assert row["comment"] == "windy"
@@ -1520,7 +1525,7 @@ def test_stats_course_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> 
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert set(payload) == {"summary", "focus", "holes"}
+    assert set(payload) == {"summary", "focus", "holes", "window", "tee_distances"}
     assert payload["holes"][0]["hole_number"] == 1
 
 
@@ -1692,7 +1697,18 @@ def test_stats_round_command_json(monkeypatch: MonkeyPatch, tmp_path: Path) -> N
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert set(payload) == {"summary", "holes", "clubs", "shots", "second_shots", "approaches"}
+    assert set(payload) == {
+        "summary",
+        "holes",
+        "clubs",
+        "shots",
+        "second_shots",
+        "approaches",
+        "by_nine",
+        "geometry",
+        "putting",
+        "context",
+    }
     assert payload["summary"]["round_id"] == 1001
     assert payload["holes"][0]["hole_number"] == 1
     assert {row["club"] for row in payload["clubs"]} == {"Driver", "8 Iron"}

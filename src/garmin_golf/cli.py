@@ -29,6 +29,8 @@ from .analysis.experiments import (
 )
 from .browser_mirror import BrowserMirror, BrowserMirrorError, validate_scorecards_url
 from .config import default_config_template, get_config_file, get_settings, set_club_name_override
+from .history import by_nine, compare_holes, hole_distances, rarity, window_metadata
+from .round_geometry import build_hole_directions
 from .stats import (
     TREND_METRIC_COLUMNS,
     build_club_context_stats,
@@ -109,6 +111,11 @@ def _shots_with_configured_club_names(shots: pl.DataFrame) -> pl.DataFrame:
         .alias("club")
     )
 
+
+ALL_OPTION = typer.Option(False, "--all", help="Use all eligible history.")
+LAST_ROUNDS_OPTION = typer.Option(
+    None, "--last-rounds", min=1, help="Most recent N eligible rounds within the selected course."
+)
 
 DATE_FROM_OPTION = typer.Option(None, "--from", help="Inclusive round date in YYYY-MM-DD format.")
 DATE_TO_OPTION = typer.Option(None, "--to", help="Inclusive round date in YYYY-MM-DD format.")
@@ -394,6 +401,8 @@ def analyze_course_command(
     date_from: str | None = DATE_FROM_OPTION,
     date_to: str | None = DATE_TO_OPTION,
     period: str | None = PERIOD_OPTION,
+    all_history: bool = ALL_OPTION,
+    last_rounds: int | None = LAST_ROUNDS_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Identify high-risk holes and supported conservative course decisions."""
@@ -404,7 +413,7 @@ def analyze_course_command(
         holes,
         shots,
         course=course,
-        **_analysis_scope_options(date_from, date_to, period, None),
+        **_history_analysis_options(date_from, date_to, period, all_history, last_rounds),
     )
     payload = result.model_dump(mode="json")
     if json_output:
@@ -581,6 +590,13 @@ def stats_annotate_round(
     exclude_from_stats: bool = EXCLUDE_FROM_STATS_OPTION,
     include_in_stats: bool = INCLUDE_IN_STATS_OPTION,
     clear_comment: bool = CLEAR_COMMENT_OPTION,
+    wind_speed_kmh: float | None = typer.Option(None, min=0),
+    wind_dir_deg: float | None = typer.Option(
+        None, min=0, max=360, help="Meteorological wind-from direction, clockwise from north."
+    ),
+    temp_c: float | None = typer.Option(None),
+    source: str | None = typer.Option(None, help="Source of recorded weather context."),
+    clear_context: bool = typer.Option(False, help="Remove all weather context."),
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Set local round metadata such as aggregate-stat exclusion and comments."""
@@ -590,6 +606,11 @@ def stats_annotate_round(
     if comment is not None and clear_comment:
         raise typer.BadParameter("Use either --comment or --clear-comment, not both.")
 
+    context = dict(
+        wind_speed_kmh=wind_speed_kmh, wind_dir_deg=wind_dir_deg, temp_c=temp_c, source=source
+    )
+    if clear_context and any(value is not None for value in context.values()):
+        raise typer.BadParameter("Use --clear-context or context values, not both.")
     storage = _storage()
     rounds = storage.read_table("rounds")
     canonical_rounds, round_aliases = _canonicalize_rounds(rounds)
@@ -617,11 +638,15 @@ def stats_annotate_round(
     elif "comment" not in row:
         row["comment"] = None
 
+    for key, value in context.items():
+        if clear_context or value is not None:
+            row[key] = None if clear_context else value
     storage.upsert_rows("rounds", [row], unique_by=["round_id"])
     payload = {
         "round_id": resolved_round_id,
         "exclude_from_stats": bool(row.get("exclude_from_stats")),
         "comment": row.get("comment"),
+        "context": {key: row.get(key) for key in context},
     }
     if json_output:
         _emit_json(payload)
@@ -676,6 +701,8 @@ def stats_trends(
     period: str | None = PERIOD_OPTION,
     window: int = TREND_WINDOW_OPTION,
     metric: str | None = TREND_METRIC_OPTION,
+    all_history: bool = ALL_OPTION,
+    last_rounds: int | None = LAST_ROUNDS_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Show rolling trend metrics for each round."""
@@ -687,11 +714,7 @@ def stats_trends(
         raise typer.BadParameter(f"Unsupported trend metric: {metric}. Use one of: {supported}.")
 
     storage = _storage()
-    canonical_rounds = _load_canonical_rounds(
-        date_from=date_from,
-        date_to=date_to,
-        period=period,
-    )
+    canonical_rounds = _history_rounds(date_from, date_to, period, all_history, last_rounds, None)
     if canonical_rounds.is_empty():
         if json_output:
             _emit_json([])
@@ -734,32 +757,16 @@ def stats_second_shots(
     date_from: str | None = DATE_FROM_OPTION,
     date_to: str | None = DATE_TO_OPTION,
     period: str | None = PERIOD_OPTION,
+    course: str | None = COURSE_OPTION,
+    hole: int | None = HOLE_OPTION,
+    all_history: bool = ALL_OPTION,
+    last_rounds: int | None = LAST_ROUNDS_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Show second-shot club usage and outcomes on par 4s and par 5s."""
 
-    storage = _storage()
-    rounds = storage.read_table("rounds")
-    if rounds.is_empty():
-        if json_output:
-            _emit_json([])
-            return
-        _console().print("No local rounds found. Run `garmin-golf mirror scorecards ...` first.")
-        return
-
-    resolved_from, resolved_to = _resolve_date_window(
-        date_from=date_from,
-        date_to=date_to,
-        period=period,
-    )
-    holes = storage.read_table("holes")
-    shots = _shots_with_configured_club_names(storage.read_table("shots"))
-    _, filtered_holes, filtered_shots = _filter_stats_tables(
-        rounds,
-        holes,
-        shots,
-        date_from=resolved_from,
-        date_to=resolved_to,
+    filtered_holes, filtered_shots = _historical_shot_tables(
+        date_from, date_to, period, all_history, last_rounds, course, hole
     )
     second_shots = build_second_shot_stats(filtered_holes, filtered_shots)
     if second_shots.is_empty():
@@ -779,32 +786,16 @@ def stats_tee_shots(
     date_from: str | None = DATE_FROM_OPTION,
     date_to: str | None = DATE_TO_OPTION,
     period: str | None = PERIOD_OPTION,
+    course: str | None = COURSE_OPTION,
+    hole: int | None = HOLE_OPTION,
+    all_history: bool = ALL_OPTION,
+    last_rounds: int | None = LAST_ROUNDS_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Show first-shot clubs, fairway results, and resulting hole outcomes."""
 
-    storage = _storage()
-    rounds = storage.read_table("rounds")
-    if rounds.is_empty():
-        if json_output:
-            _emit_json([])
-            return
-        _console().print("No local rounds found. Run `garmin-golf mirror scorecards ...` first.")
-        return
-
-    resolved_from, resolved_to = _resolve_date_window(
-        date_from=date_from,
-        date_to=date_to,
-        period=period,
-    )
-    holes = storage.read_table("holes")
-    shots = _shots_with_configured_club_names(storage.read_table("shots"))
-    _, filtered_holes, filtered_shots = _filter_stats_tables(
-        rounds,
-        holes,
-        shots,
-        date_from=resolved_from,
-        date_to=resolved_to,
+    filtered_holes, filtered_shots = _historical_shot_tables(
+        date_from, date_to, period, all_history, last_rounds, course, hole
     )
     tee_shots = build_tee_shot_stats(filtered_holes, filtered_shots)
     if tee_shots.is_empty():
@@ -830,6 +821,8 @@ def stats_approaches(
     by_direction: bool = typer.Option(
         False, "--by-direction", help="Sort rows by left/right/on-line direction."
     ),
+    course: str | None = COURSE_OPTION,
+    hole: int | None = HOLE_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Show approach distance, target-line direction, and GIR by shot."""
@@ -867,6 +860,15 @@ def stats_approaches(
             date_to=resolved_to,
         )
 
+    _, shots, holes = _filter_club_stats_tables(
+        raw_shots=shots,
+        resolved_shots=shots,
+        holes=holes,
+        course=course,
+        hole=hole,
+        canonical_rounds=rounds.with_columns(_display_course_expr(rounds)),
+    )
+
     approach_rows = build_approach_direction_stats(
         holes, shots, clubs.split(",") if clubs else None
     )
@@ -893,6 +895,8 @@ def stats_clubs(
     approach_accuracy: bool = APPROACH_ACCURACY_OPTION,
     course: str | None = COURSE_OPTION,
     hole: int | None = HOLE_OPTION,
+    all_history: bool = ALL_OPTION,
+    last_rounds: int | None = LAST_ROUNDS_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """List observed club ids with inferred and configured names."""
@@ -901,18 +905,9 @@ def stats_clubs(
         raise typer.BadParameter("Use either --by-context or --approach-accuracy, not both.")
 
     storage = _storage()
-    resolved_from, resolved_to = _resolve_date_window(
-        date_from=date_from,
-        date_to=date_to,
-        period=period,
-    )
     rounds = storage.read_table("rounds")
     raw_shots = _shots_with_normalized_shot_types(storage.read_table("shots"))
-    included_rounds = _load_canonical_rounds(
-        date_from=resolved_from.isoformat() if resolved_from is not None else None,
-        date_to=resolved_to.isoformat() if resolved_to is not None else None,
-        period=None,
-    )
+    included_rounds = _history_rounds(date_from, date_to, period, all_history, last_rounds, course)
     if not rounds.is_empty() and included_rounds.is_empty():
         raw_shots = raw_shots.head(0)
     elif not included_rounds.is_empty() and "round_id" in included_rounds.columns:
@@ -993,32 +988,16 @@ def stats_putting(
     date_from: str | None = DATE_FROM_OPTION,
     date_to: str | None = DATE_TO_OPTION,
     period: str | None = PERIOD_OPTION,
+    course: str | None = COURSE_OPTION,
+    hole: int | None = HOLE_OPTION,
+    all_history: bool = ALL_OPTION,
+    last_rounds: int | None = LAST_ROUNDS_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Show first-putt outcomes by starting distance bucket."""
 
-    storage = _storage()
-    rounds = storage.read_table("rounds")
-    if rounds.is_empty():
-        if json_output:
-            _emit_json([])
-            return
-        _console().print("No local rounds found. Run `garmin-golf mirror scorecards ...` first.")
-        return
-
-    resolved_from, resolved_to = _resolve_date_window(
-        date_from=date_from,
-        date_to=date_to,
-        period=period,
-    )
-    holes = storage.read_table("holes")
-    shots = _shots_with_configured_club_names(storage.read_table("shots"))
-    _, filtered_holes, filtered_shots = _filter_stats_tables(
-        rounds,
-        holes,
-        shots,
-        date_from=resolved_from,
-        date_to=resolved_to,
+    filtered_holes, filtered_shots = _historical_shot_tables(
+        date_from, date_to, period, all_history, last_rounds, course, hole
     )
     putting = build_putting_stats(filtered_holes, filtered_shots)
     if putting.is_empty():
@@ -1113,19 +1092,26 @@ def stats_course(
     date_from: str | None = DATE_FROM_OPTION,
     date_to: str | None = DATE_TO_OPTION,
     period: str | None = PERIOD_OPTION,
+    all_history: bool = ALL_OPTION,
+    last_rounds: int | None = LAST_ROUNDS_OPTION,
+    hole: int | None = HOLE_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Print course-specific stats and hole difficulty insights."""
 
     storage = _storage()
-    canonical_rounds = _load_canonical_rounds(
-        date_from=date_from,
-        date_to=date_to,
-        period=period,
-    )
+    canonical_rounds = _history_rounds(date_from, date_to, period, all_history, last_rounds, course)
     if canonical_rounds.is_empty():
         if json_output:
-            _emit_json({"summary": {}, "focus": {}, "holes": []})
+            _emit_json(
+                {
+                    "summary": {},
+                    "focus": {},
+                    "holes": [],
+                    "window": window_metadata(canonical_rounds),
+                    "tee_distances": [],
+                }
+            )
             return
         _console().print("No courses matched the selected date window.")
         return
@@ -1152,10 +1138,21 @@ def stats_course(
     )
 
     summary = build_summary_stats(target_rounds, target_holes, target_shots)
+    if hole is not None:
+        target_holes = _filter_hole_table(target_holes, hole)
+        target_shots = _filter_hole_table(target_shots, hole)
     hole_stats = build_course_hole_stats(target_rounds, target_holes)
     focus = build_course_focus_stats(hole_stats)
     if json_output:
-        _emit_json({"summary": summary, "focus": focus, "holes": hole_stats})
+        _emit_json(
+            {
+                "summary": summary,
+                "focus": focus,
+                "holes": hole_stats,
+                "window": window_metadata(target_rounds),
+                "tee_distances": hole_distances(target_shots),
+            }
+        )
         return
 
     _render_mapping(f"Course Summary: {course}", summary)
@@ -1170,10 +1167,25 @@ def stats_course(
 def stats_round(
     round_id: int | None = ROUND_ID_OPTION,
     last_round: bool = LAST_ROUND_OPTION,
+    vs_baseline: bool = typer.Option(
+        False, help="Compare with prior eligible rounds on this course."
+    ),
+    date_from: str | None = DATE_FROM_OPTION,
+    date_to: str | None = DATE_TO_OPTION,
+    period: str | None = PERIOD_OPTION,
+    all_history: bool = ALL_OPTION,
+    last_rounds: int | None = LAST_ROUNDS_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Print local analysis for one round."""
 
+    _validate_history_options(date_from, date_to, period, all_history, last_rounds)
+    if not vs_baseline and (
+        all_history
+        or last_rounds is not None
+        or any(v is not None for v in (date_from, date_to, period))
+    ):
+        raise typer.BadParameter("Baseline window options require --vs-baseline.")
     storage = _storage()
     rounds = storage.read_table("rounds")
     canonical_rounds, round_aliases = _canonicalize_rounds(rounds)
@@ -1214,9 +1226,39 @@ def stats_round(
     shot_table = _build_round_shots_table(shots)
     second_shots = build_second_shot_stats(holes, shots)
     approaches = build_approach_direction_stats(holes, shots)
+    extras: dict[str, object] = {
+        "geometry": {
+            "round_id": resolved_round_id,
+            "played_on": round_info.row(0, named=True).get("played_on"),
+            "start_time": round_info.row(0, named=True).get("start_time"),
+            "bearing_convention": "direction of play, degrees clockwise from true north",
+            "coordinate_units": "decimal degrees",
+            "holes": build_hole_directions(holes, shots),
+            "limitations": [
+                "Single-round GPS observations, not surveyed course layout or intended aim.",
+                "Straight-line distance is not playing length; use shot bearings on doglegs.",
+                "Weather must be sourced separately for the location and time; directions do not establish a wind effect.",
+            ],
+        },
+        "by_nine": by_nine(holes),
+        "putting": build_putting_stats(holes, shots),
+        "context": {
+            key: round_info.row(0, named=True).get(key)
+            for key in ("wind_speed_kmh", "wind_dir_deg", "temp_c", "source")
+        },
+    }
+    if vs_baseline:
+        baseline = _round_baseline(round_info, date_from, date_to, period, all_history, last_rounds)
+        baseline_holes = _filter_round_table(all_holes, baseline["round_id"].to_list())
+        extras["vs_course_baseline"] = {
+            "window": window_metadata(baseline),
+            "holes": compare_holes(holes, baseline_holes),
+            "baseline_policy": "same course, strictly earlier dates; target and excluded rounds omitted",
+        }
     if json_output:
         _emit_json(
             {
+                **extras,
                 "summary": summary,
                 "holes": hole_table,
                 "clubs": club_table,
@@ -1228,6 +1270,44 @@ def stats_round(
         return
 
     _render_mapping(round_title, summary)
+    for label, split in by_nine(holes).items():
+        _render_mapping(label.replace("_", " ").title(), split)
+    _render_putting_table(build_putting_stats(holes, shots))
+    direction_table = Table(title="Observed hole directions (clockwise from true north)")
+    for column in ("Hole", "Bearing °", "GPS straight line (m)", "Source"):
+        direction_table.add_column(column)
+    for row in build_hole_directions(holes, shots):
+        direction_table.add_row(
+            str(row["hole_number"]),
+            _display_value(row["bearing_deg"]),
+            _display_value(row["straight_line_distance_m"]),
+            row["source"],
+        )
+    _console().print(direction_table)
+    context = extras["context"]
+    if isinstance(context, dict) and any(value is not None for value in context.values()):
+        _render_mapping("Recorded context", context)
+    if vs_baseline:
+        comparison = extras["vs_course_baseline"]
+        if isinstance(comparison, dict):
+            _render_mapping("Course baseline window", comparison["window"])
+            table = Table(title="Hole comparison (positive delta = more strokes)")
+            for column in ("Hole", "Baseline to par", "Delta", "Rounds", "Exploratory"):
+                table.add_column(column)
+            for row in comparison["holes"]:
+                table.add_row(
+                    *(
+                        str(row[key])
+                        for key in (
+                            "hole_number",
+                            "baseline_avg_to_par",
+                            "delta_to_par",
+                            "rounds_played",
+                            "exploratory",
+                        )
+                    )
+                )
+            _console().print(table)
     if not hole_table.is_empty():
         _render_round_holes_table(round_title, hole_table)
 
@@ -1241,6 +1321,177 @@ def stats_round(
         _render_second_shots_table(second_shots, title=f"{round_title}: Second Shots")
     if not approaches.is_empty():
         _render_approach_direction_table(approaches, title=f"{round_title}: Approaches")
+
+
+def _history_analysis_options(
+    date_from: str | None,
+    date_to: str | None,
+    period: str | None,
+    all_history: bool,
+    last_rounds: int | None,
+) -> dict[str, object]:
+    _validate_history_options(date_from, date_to, period, all_history, last_rounds)
+    if all_history:
+        return {}
+    return _analysis_scope_options(date_from, date_to, period, last_rounds)
+
+
+def _validate_history_options(
+    date_from: str | None,
+    date_to: str | None,
+    period: str | None,
+    all_history: bool,
+    last_rounds: int | None,
+) -> None:
+    if (
+        sum(
+            (
+                all_history,
+                last_rounds is not None,
+                any(v is not None for v in (date_from, date_to, period)),
+            )
+        )
+        > 1
+    ):
+        raise typer.BadParameter("Use --all, --last-rounds, or date filters, not together.")
+    if last_rounds is not None and last_rounds < 1:
+        raise typer.BadParameter("--last-rounds must be positive.")
+    start, end = _resolve_date_window(date_from=date_from, date_to=date_to, period=period)
+    if start is not None and end is not None and start > end:
+        raise typer.BadParameter("--from must not be after --to.")
+
+
+def _history_rounds(
+    date_from: str | None,
+    date_to: str | None,
+    period: str | None,
+    all_history: bool,
+    last_rounds: int | None,
+    course: str | None = None,
+) -> pl.DataFrame:
+    _validate_history_options(date_from, date_to, period, all_history, last_rounds)
+    rounds = _load_canonical_rounds(date_from=date_from, date_to=date_to, period=period)
+    if course is not None and not rounds.is_empty():
+        rounds = rounds.filter(pl.col("display_course_name") == course)
+        if rounds.is_empty():
+            raise typer.BadParameter(
+                f"Course not found: {course}. Use `garmin-golf stats courses` to inspect available names."
+            )
+    if last_rounds is not None and not rounds.is_empty():
+        rounds = rounds.sort(["played_on", "round_id"], descending=True, nulls_last=True).head(
+            last_rounds
+        )
+    return rounds
+
+
+def _historical_shot_tables(
+    date_from: str | None,
+    date_to: str | None,
+    period: str | None,
+    all_history: bool,
+    last_rounds: int | None,
+    course: str | None,
+    hole: int | None,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Select eligible course rounds before N, then scope their holes and shots."""
+    rounds = _history_rounds(date_from, date_to, period, all_history, last_rounds, course)
+    ids = rounds["round_id"].drop_nulls().to_list() if "round_id" in rounds.columns else []
+    storage = _storage()
+    holes = _filter_round_table(storage.read_table("holes"), ids)
+    shots = _filter_round_table(_shots_with_configured_club_names(storage.read_table("shots")), ids)
+    if hole is not None:
+        holes = _filter_hole_table(holes, hole)
+        shots = _filter_hole_table(shots, hole)
+    return holes, shots
+
+
+def _round_baseline(
+    target: pl.DataFrame,
+    date_from: str | None,
+    date_to: str | None,
+    period: str | None,
+    all_history: bool,
+    last_rounds: int | None,
+) -> pl.DataFrame:
+    # Apply N only after course, prior-date and exclusion filters.
+    _validate_history_options(date_from, date_to, period, all_history, last_rounds)
+    row = target.with_columns(_display_course_expr(target)).row(0, named=True)
+    if not row.get("played_on"):
+        raise typer.BadParameter("A recorded round date is required for a prior-round baseline.")
+    rounds = _history_rounds(date_from, date_to, period, all_history, None)
+    if not rounds.is_empty():
+        rounds = rounds.filter(
+            (pl.col("display_course_name") == row["display_course_name"])
+            & (pl.col("round_id") != row["round_id"])
+            & (pl.col("played_on") < row["played_on"])
+        )
+        if last_rounds is not None:
+            rounds = rounds.sort(["played_on", "round_id"], descending=True, nulls_last=True).head(
+                last_rounds
+            )
+    return rounds
+
+
+@stats_app.command("rarity")
+def stats_rarity(
+    metric: str = typer.Option(
+        ...,
+        help="average_to_par, front_back_gap, gir_pct, fir_pct, three_putts_per_18, penalties_per_18",
+    ),
+    round_id: int | None = ROUND_ID_OPTION,
+    last_round: bool = LAST_ROUND_OPTION,
+    date_from: str | None = DATE_FROM_OPTION,
+    date_to: str | None = DATE_TO_OPTION,
+    period: str | None = PERIOD_OPTION,
+    all_history: bool = ALL_OPTION,
+    last_rounds: int | None = LAST_ROUNDS_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Locate a round within prior same-course, same-hole-count history."""
+    from .history import round_value
+
+    if metric not in {
+        "average_to_par",
+        "front_back_gap",
+        "gir_pct",
+        "fir_pct",
+        "three_putts_per_18",
+        "penalties_per_18",
+    }:
+        raise typer.BadParameter("Unsupported rarity metric.")
+    rounds, aliases = _canonicalize_rounds(_storage().read_table("rounds"))
+    rounds = rounds.with_columns(_display_course_expr(rounds)) if not rounds.is_empty() else rounds
+    selected = _resolve_round_selector(rounds, aliases, round_id=round_id, last_round=last_round)
+    target = rounds.filter(pl.col("round_id") == selected)
+    _validate_history_options(date_from, date_to, period, all_history, last_rounds)
+    baseline = _round_baseline(target, date_from, date_to, period, all_history, None)
+    if not baseline.is_empty():
+        baseline = baseline.sort(["played_on", "round_id"], descending=True, nulls_last=True)
+    holes = _storage().read_table("holes")
+    target_holes = _filter_round_table(holes, [selected])
+    values: list[float] = []
+    used: list[int] = []
+    for rid in baseline["round_id"].to_list():
+        sample = _filter_round_table(holes, [rid])
+        if sample.height != target_holes.height:
+            continue
+        value = round_value(sample, metric)
+        if value is not None:
+            values.append(value)
+            used.append(rid)
+            if last_rounds is not None and len(used) >= last_rounds:
+                break
+    payload = {
+        "metric": metric,
+        "round_id": selected,
+        **rarity(round_value(target_holes, metric), values),
+        "window": window_metadata(_filter_round_table(baseline, used)),
+        "baseline_policy": "same course, same hole count, strictly earlier dates; target and excluded rounds omitted",
+    }
+    if json_output:
+        _emit_json(payload)
+    else:
+        _render_mapping("Round rarity", payload)
 
 
 def _render_mapping(title: str, values: Mapping[str, object]) -> None:

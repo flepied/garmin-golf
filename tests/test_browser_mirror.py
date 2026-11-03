@@ -224,7 +224,17 @@ def test_browser_import_preserves_round_annotations(
     import_browser_export_payload(storage, payload)
     storage.upsert_rows(
         "rounds",
-        [{"round_id": 42, "exclude_from_stats": True, "comment": "competition"}],
+        [
+            {
+                "round_id": 42,
+                "exclude_from_stats": True,
+                "comment": "competition",
+                "wind_speed_kmh": 12.0,
+                "wind_dir_deg": 250.0,
+                "temp_c": 9.0,
+                "source": "manual",
+            }
+        ],
         unique_by=["round_id"],
     )
     import_browser_export_payload(storage, payload)
@@ -232,6 +242,10 @@ def test_browser_import_preserves_round_annotations(
     row = storage.read_table("rounds").row(0, named=True)
     assert row["exclude_from_stats"] is True
     assert row["comment"] == "competition"
+    assert row["wind_speed_kmh"] == 12.0
+    assert row["wind_dir_deg"] == 250.0
+    assert row["temp_c"] == 9.0
+    assert row["source"] == "manual"
 
 
 def test_mirror_scorecards_command_json(

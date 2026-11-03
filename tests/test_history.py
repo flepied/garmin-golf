@@ -303,3 +303,114 @@ def test_round_exposes_gps_geometry_and_weather_separately(history: Storage) -> 
     assert len(hole["shots"]) == 2
     assert hole["start"] == {"lat": 48.0, "lon": 2.0}
     assert all(value is None for value in result["context"].values())
+
+
+def test_tee_distance_rarity(history: Storage) -> None:
+    shots = history.read_table("shots").with_columns(
+        pl.when((pl.col("shot_number") == 1) & (pl.col("hole_number") == 1))
+        .then(100.0 + pl.col("round_id") * 10)
+        .otherwise(pl.col("distance_meters"))
+        .alias("distance_meters")
+    )
+    history.upsert_rows(
+        "shots", shots.to_dicts(), unique_by=["round_id", "hole_number", "shot_number"]
+    )
+    result = invoke(
+        "stats",
+        "rarity",
+        "--metric",
+        "tee_distance_m",
+        "--round-id",
+        "5",
+        "--course",
+        "A",
+        "--hole",
+        "1",
+        "--all",
+    )
+    assert isinstance(result, dict)
+    assert result["value"] == 150
+    assert result["mean"] == 115
+    assert result["n"] == 2
+    assert result["percentile"] == 100
+    assert result["z"] == pytest.approx(35 / (50**0.5))
+    assert result["window"]["round_ids"] == [2, 1]
+    assert result["hole_number"] == 1
+    assert result["exploratory"] is True
+    recent = invoke(
+        "stats",
+        "rarity",
+        "--metric",
+        "tee_distance_m",
+        "--round-id",
+        "5",
+        "--hole",
+        "1",
+        "--last-rounds",
+        "1",
+    )
+    assert isinstance(recent, dict)
+    assert recent["window"]["round_ids"] == [2]
+
+
+@pytest.mark.parametrize("distance", [None, 0.0, -1.0, float("nan"), float("inf")])
+def test_tee_rarity_skips_invalid_samples(history: Storage, distance: float | None) -> None:
+    history.upsert_rows(
+        "shots",
+        [
+            {
+                "round_id": 2,
+                "hole_number": 1,
+                "shot_number": 1,
+                "shot_type": "TEE",
+                "distance_meters": distance,
+            }
+        ],
+        unique_by=["round_id", "hole_number", "shot_number"],
+    )
+    result = invoke(
+        "stats",
+        "rarity",
+        "--metric",
+        "tee_distance_m",
+        "--round-id",
+        "5",
+        "--hole",
+        "1",
+        "--last-rounds",
+        "1",
+    )
+    assert isinstance(result, dict)
+    assert result["window"]["round_ids"] == [1]
+    assert result["z"] is None
+    missing = invoke(
+        "stats",
+        "rarity",
+        "--metric",
+        "tee_distance_m",
+        "--round-id",
+        "2",
+        "--hole",
+        "1",
+        "--from",
+        "2030-01-01",
+    )
+    assert isinstance(missing, dict)
+    assert missing["value"] is None
+    assert missing["n"] == 0
+    assert missing["percentile"] is None
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["--metric", "tee_distance_m"],
+        ["--metric", "front_back_gap", "--hole", "1"],
+        ["--metric", "tee_distance_m", "--hole", "0"],
+        ["--metric", "tee_distance_m", "--hole", "1", "--course", "B"],
+        ["--metric", "tee_distance_m", "--hole", "1", "--all", "--last-rounds", "1"],
+    ],
+)
+def test_tee_rarity_invalid_options(history: Storage, options: list[str]) -> None:
+    result = CliRunner().invoke(app, ["stats", "rarity", "--round-id", "5", *options, "--json"])
+    assert result.exit_code == 2

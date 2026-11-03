@@ -1436,10 +1436,12 @@ def _round_baseline(
 def stats_rarity(
     metric: str = typer.Option(
         ...,
-        help="average_to_par, front_back_gap, gir_pct, fir_pct, three_putts_per_18, penalties_per_18",
+        help="average_to_par, front_back_gap, gir_pct, fir_pct, three_putts_per_18, penalties_per_18, tee_distance_m",
     ),
     round_id: int | None = ROUND_ID_OPTION,
     last_round: bool = LAST_ROUND_OPTION,
+    course: str | None = COURSE_OPTION,
+    hole: int | None = HOLE_OPTION,
     date_from: str | None = DATE_FROM_OPTION,
     date_to: str | None = DATE_TO_OPTION,
     period: str | None = PERIOD_OPTION,
@@ -1448,9 +1450,10 @@ def stats_rarity(
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Locate a round within prior same-course, same-hole-count history."""
-    from .history import round_value
+    from .history import round_value, tee_distance_value
 
     if metric not in {
+        "tee_distance_m",
         "average_to_par",
         "front_back_gap",
         "gir_pct",
@@ -1459,23 +1462,47 @@ def stats_rarity(
         "penalties_per_18",
     }:
         raise typer.BadParameter("Unsupported rarity metric.")
+    if metric == "tee_distance_m" and hole is None:
+        raise typer.BadParameter("--hole is required for tee_distance_m.")
+    if metric != "tee_distance_m" and hole is not None:
+        raise typer.BadParameter("--hole is only supported for tee_distance_m.")
     rounds, aliases = _canonicalize_rounds(_storage().read_table("rounds"))
     rounds = rounds.with_columns(_display_course_expr(rounds)) if not rounds.is_empty() else rounds
+    if course is not None:
+        rounds = (
+            rounds.filter(pl.col("display_course_name") == course)
+            if not rounds.is_empty()
+            else rounds
+        )
+        if rounds.is_empty():
+            raise typer.BadParameter("No rounds found for the requested course.")
     selected = _resolve_round_selector(rounds, aliases, round_id=round_id, last_round=last_round)
     target = rounds.filter(pl.col("round_id") == selected)
+    if target.is_empty():
+        raise typer.BadParameter("The selected round does not belong to the requested course.")
     _validate_history_options(date_from, date_to, period, all_history, last_rounds)
     baseline = _round_baseline(target, date_from, date_to, period, all_history, None)
     if not baseline.is_empty():
         baseline = baseline.sort(["played_on", "round_id"], descending=True, nulls_last=True)
     holes = _storage().read_table("holes")
     target_holes = _filter_round_table(holes, [selected])
+    shots = _storage().read_table("shots") if metric == "tee_distance_m" else pl.DataFrame()
+    target_value = (
+        tee_distance_value(_filter_round_table(shots, [selected]), hole)
+        if metric == "tee_distance_m" and hole is not None
+        else round_value(target_holes, metric)
+    )
     values: list[float] = []
     used: list[int] = []
     for rid in baseline["round_id"].to_list():
         sample = _filter_round_table(holes, [rid])
-        if sample.height != target_holes.height:
+        if metric != "tee_distance_m" and sample.height != target_holes.height:
             continue
-        value = round_value(sample, metric)
+        value = (
+            tee_distance_value(_filter_round_table(shots, [rid]), hole)
+            if metric == "tee_distance_m" and hole is not None
+            else round_value(sample, metric)
+        )
         if value is not None:
             values.append(value)
             used.append(rid)
@@ -1484,10 +1511,21 @@ def stats_rarity(
     payload = {
         "metric": metric,
         "round_id": selected,
-        **rarity(round_value(target_holes, metric), values),
+        **rarity(target_value, values),
         "window": window_metadata(_filter_round_table(baseline, used)),
         "baseline_policy": "same course, same hole count, strictly earlier dates; target and excluded rounds omitted",
     }
+    if metric == "tee_distance_m":
+        payload.update(
+            {
+                "course": target.row(0, named=True)["display_course_name"],
+                "hole_number": hole,
+                "units": "metres",
+                "distance_trimming": "none",
+                "exploratory": len(values) < 10,
+                "baseline_policy": "same course and hole, strictly earlier dates; one positive finite non-putt first-shot length per round; target and excluded rounds omitted",
+            }
+        )
     if json_output:
         _emit_json(payload)
     else:

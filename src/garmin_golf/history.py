@@ -101,6 +101,24 @@ def round_value(holes: pl.DataFrame, metric: str) -> float | None:
     return sum(float(v >= 3) if column == "putts" else float(v) for v in values) * 18 / len(rows)
 
 
+def tee_distance_value(shots: pl.DataFrame, hole: int) -> float | None:
+    """Return a single valid first-shot length, without outlier trimming."""
+    rows = [
+        row
+        for row in shots.to_dicts()
+        if row.get("hole_number") == hole
+        and row.get("shot_number") == 1
+        and str(row.get("shot_type") or "").upper() != "PUTT"
+    ]
+    if len(rows) != 1:
+        return None
+    value = rows[0].get("distance_meters")
+    if value is None:
+        return None
+    distance = float(value)
+    return distance if math.isfinite(distance) and distance > 0 else None
+
+
 def rarity(value: float | None, values: list[float]) -> dict[str, Any]:
     n = len(values)
     std = statistics.stdev(values) if n > 1 else None

@@ -201,7 +201,9 @@ uv run garmin-golf stats round --round-id <id> --vs-baseline --last-rounds 20 --
 
 Start with `analyze round --json` for the deterministic five-section debrief.
 Then use `stats round --json` for the hole table and recorded shot sequence when
-the debrief needs concrete club or distance context. Do not compare one round
+the debrief needs concrete club or distance context. For returned approach rows, take distance to play from
+`approaches[].start_distance_to_pin_m`; `shots[].distance_meters` is shot length,
+so it cannot state how far out a shot was played. Do not compare one round
 against an unrelated all-time aggregate when recent or course-specific data is
 available.
 
@@ -304,7 +306,23 @@ uv run garmin-golf stats annotate-round --round-id 22068626916 --exclude-from-st
 uv run garmin-golf stats annotate-round --last-round --comment "windy"
 ```
 
-Run `stats rounds` first when the user does not know the round id. `stats round --json` returns the round summary, a hole-by-hole table, round club usage, the recorded shot sequence (`shots`) with club and distance on every hole, and par-4/par-5 second-shot breakdowns when shot data is available.
+Run `stats rounds` first when the user does not know the round id. `stats round --json` returns the round summary, a hole-by-hole table, round club usage, the recorded shot sequence (`shots`) with club and shot length on every hole, the `approaches` detail rows, and par-4/par-5 second-shot breakdowns when shot data is available.
+
+Read the two distance fields apart, because they answer different questions. In
+`shots[]`, `distance_meters` is the **length of the shot that was hit**: across a
+hole it adds up to roughly the hole length, so it is never the remaining
+yardage. Distance to play comes from `approaches[].start_distance_to_pin_m`
+(before the shot) and `end_distance_to_pin_m` (after it), which are also returned
+inside `stats round --json`. For "from more than N metres" questions about
+returned approach rows, read `start_distance_to_pin_m`. These rows cover shots
+classified as `APPROACH` and par-4 second shots, and require valid shot start,
+shot end, and pin coordinates. Other shots and approaches with incomplete GPS
+are omitted. A missing row means distance to play is unavailable through this
+array, not that the shot was below the threshold. State this coverage when
+reporting counts; do not present them as exhaustive unless coverage is verified.
+Do not reconstruct distance to play by subtracting shot lengths, and never
+present such a subtraction as a measurement.
+
 Use `--last-round` instead of `--round-id` to select the most recently played local round. The two selectors are mutually exclusive.
 Use `stats annotate-round` to set local round metadata. `--exclude-from-stats` removes the round from aggregate multi-round stats, `--include-in-stats` restores it, `--comment` sets a freeform note, and `--clear-comment` removes the note. Single-round `stats round` remains available for excluded rounds.
 Optional weather fields are `--wind-speed-kmh`, `--wind-dir-deg` (meteorological
@@ -345,6 +363,11 @@ in `stats round --json`. `lateral_to_target_m` is positive to the left of the
 start-to-pin line and negative to the right; values from -3 m through +3 m are
 `on_line`. It measures final position only and cannot establish whether the
 ball initially started left or right of the intended target.
+`start_distance_to_pin_m` is the measured distance to play before the shot and is
+the correct field for a long-approach question such as "> 175 m" among returned
+rows, subject to the classification and GPS coverage limits above; the
+`distance_meters` in `shots[]` is the length of the shot that was hit and cannot
+answer it.
 Use `analyze player` when the user wants an overall left/right tendency. Its tee profile covers par-4/5 first shots; its approach profile derives lateral direction from the GPS target line and reports GIR by direction. Do not call a direction a swing fault or assume it was unintended.
 Use `stats clubs` when club labels look suspicious or need bag-specific overrides; it exposes observed `club_id` values, inferred names, configured names, counts, average distances, and distance dispersion (`distance_stddev_m`) based on the same outlier-trimmed samples.
 Use `stats clubs --by-context` when the user wants club performance split by contexts such as par-3 tee shots, par-4 tee shots, par-4 approaches, par-5 second shots, short game, recovery, and putting.
@@ -443,6 +466,24 @@ Percentiles use midrank ties and z-scores use sample standard deviation;
 constant or insufficient samples have a null z-score. Read `n`, `window`, and
 `exploratory`, and avoid causal claims or interpreting z as a normal-distribution
 tail probability. Rolling averages from `stats trends` do not measure rarity.
+
+For first-shot distance rarity on a particular hole, use:
+
+```bash
+uv run garmin-golf stats rarity --last-round --course "Golf National ~ Aigle" --hole 12 --metric tee_distance_m --all --json
+```
+
+`tee_distance_m` requires `--hole` (1–18); other rarity metrics reject `--hole`.
+`--course` optionally restricts target selection (including `--last-round`);
+otherwise the target round determines the course. History uses the same course
+and hole on strictly earlier dates, regardless of recorded round hole count.
+It compares all clubs, using one positive finite non-putt first-shot length per
+round, without outlier trimming. Missing, invalid or ambiguous first shots are
+omitted; a missing target distance yields null value, percentile and z-score.
+`--last-rounds N` selects the latest N usable samples after these filters.
+Read `window`, `n`, `units` and `distance_trimming`; fewer than 10 shots are
+exploratory. This measures shot length, not distance to play or driver-only
+performance, and does not establish a wind effect.
 
 Use these CLI primitives before writing ad-hoc Parquet scripts. If the CLI
 cannot answer a question, identify the specific missing capability; existing

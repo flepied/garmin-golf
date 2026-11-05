@@ -327,8 +327,9 @@ Use `--last-round` instead of `--round-id` to select the most recently played lo
 Use `stats annotate-round` to set local round metadata. `--exclude-from-stats` removes the round from aggregate multi-round stats, `--include-in-stats` restores it, `--comment` sets a freeform note, and `--clear-comment` removes the note. Single-round `stats round` remains available for excluded rounds.
 Optional weather fields are `--wind-speed-kmh`, `--wind-dir-deg` (meteorological
 wind-from direction, clockwise from north), `--temp-c`, and `--source` (for
-example `manual` or a named weather archive). They appear as `context` in the
-round view and survive browser re-import. `--clear-context` clears these fields.
+example `manual`, `open-meteo`, or another named weather archive). They appear
+as `context` in the round view and survive browser re-import. `--clear-context`
+clears these fields.
 These are recorded values, not verified conditions for every shot or evidence
 that wind caused a distance change.
 
@@ -402,11 +403,23 @@ when a human-readable table is more useful than machine-readable JSON.
 
 ### Hole directions and weather
 
-For a wind question, use `stats round --round-id <id> --json` and read
-`geometry.holes`. This geometry comes from that recorded round, including
-excluded rounds, without needing a historical sample or external course map.
-`bearing_deg` is the direction of play in degrees clockwise from true north
-(0 north, 90 east, 180 south, 270 west). Coordinates are decimal degrees.
+For a wind question about tee shots, use the course aggregate
+(`stats course --course <name> --json` -> `tee_distances[].observed_tee_bearing_deg`),
+which combines eligible rounds' recorded tee shots and reports `geometry_n` and
+`direction_concentration`. Check both before interpreting the mean: sparse GPS
+or low concentration makes a usual direction unreliable. It can use other
+rounds when the target round lacks GPS. Use
+`stats round --round-id <id> --json` and read `geometry.holes` for a single
+round, an individual shot, or a course with no aggregate sample. That geometry
+comes from that recorded round, including excluded rounds, without needing a
+historical sample or external course map. `bearing_deg` is the direction of
+play in degrees clockwise from true north (0 north, 90 east, 180 south,
+270 west). Coordinates are decimal degrees. Per-round bearings are null when
+that round lacks valid GPS endpoints, and a tee-to-pin line cuts a dogleg
+corner, so the two sources can disagree by a wide margin on a bending hole
+(tens of degrees). The aggregate describes the usual first-shot direction,
+not the whole hole's axis or the direction of subsequent shots. The per-round
+hole bearing describes the line between the endpoints declared by its source.
 
 Each hole declares its `source`: `tee_to_recorded_pin` is preferred;
 `tee_to_last_recorded_endpoint` falls back to the latest usable recorded
@@ -423,11 +436,54 @@ shot bearings distinct: a hole can turn while the wind stays the same.
 
 Combine this local geometry with weather supplied by the golfer, recorded in
 `context`, or obtained separately for the actual location, date and time.
+A convenient source is [Open-Meteo](https://open-meteo.com/en/docs), whose
+non-commercial API offers hourly data without an API key. Preserve provenance
+in the freeform `--source` field: endpoint, requested model (or automatic model
+selection), coordinates, played window with timezone, and retrieval date.
+For example, use a source string beginning `open-meteo archive; model=era5`
+and append the actual location, window and retrieval date. A bare
+`open-meteo` label cannot distinguish forecast from archive data.
 Use `geometry.played_on`, `start_time`, and GPS endpoints to select relevant
-weather; use per-shot times only when usable. If only a daily/round average is
-available, state that approximation rather than implying a measurement at
-each hole. Cite the weather source and preserve its wind-direction convention.
-The CLI itself does not fetch weather.
+weather; use per-shot times only when usable. The round view exposes the tee
+time as `geometry.start_time` but no end time. Check `summary_json.endTime`
+and `scorecard_json.endTime` in `data/parquet/rounds.parquet` when available;
+do not assume either field exists or that they agree. If no reliable end time
+is available, state the estimated window and its uncertainty.
+Establish the timezone of Garmin timestamps before matching weather: preserve
+explicit offsets, and verify the timezone of timestamps without an offset
+rather than silently treating them as UTC or local time. Request hourly data
+with `timezone=auto` and `timeformat=unixtime`, then compare timestamps as UTC
+instants. Use the returned IANA timezone to display local times with the offset
+applicable on the played date, including daylight saving time. Do not assume
+the API's fixed `utc_offset_seconds` applies to every historical date.
+Cover the whole played window and state its bounds. A daily summary describes
+the calendar day rather than the hours played. Request `wind_speed_10m`,
+`wind_direction_10m` (wind-from), `wind_gusts_10m`, `precipitation`, and
+`temperature_2m` for the round's GPS location, and report the window's mean
+wind, maximum gust, dominant direction, and precipitation total (which can
+include snow). Wind and temperature are instantaneous samples; precipitation
+is summed over the preceding hour and gusts are its maximum. For example, the
+12:00 precipitation value covers 11:00–12:00. Select accumulation intervals
+overlapping play rather than applying the same timestamp filter to every
+variable. State boundary-hour approximations: prorating precipitation assumes
+uniform precipitation within that hour, and a partial-hour gust cannot be
+isolated from its hourly maximum. Do not claim an exact played-window total
+from partial-hour data. Use a circular/vector method for wind direction, not
+an arithmetic average of degrees; report variable direction when vectors
+cancel. For a wind component over time, average the hourly components rather
+than multiplying separately averaged speed and direction.
+
+Choose the forecast endpoint (`past_days` supports 0–92) or the
+[historical archive](https://open-meteo.com/en/docs/historical-weather-api)
+according to date coverage and model availability. Their models can disagree
+materially; no small bound on the difference is guaranteed. Keep endpoint,
+model and aggregation method consistent across compared rounds, and disclose
+any unavoidable differences. ERA5 and ERA5-Land have about a five-day
+availability delay; this is not a general guarantee that archive values have
+settled after five days. Check missing values before aggregation. If only a
+daily/round average is available, state that approximation rather than
+implying a measurement at each hole. Cite the weather source and preserve its
+wind-direction convention. The CLI itself does not fetch weather.
 
 Meteorological `wind_dir_deg` says where wind **comes from**, whereas bearings
 say where play **goes**. For speed V and angle difference between wind-from
